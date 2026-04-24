@@ -1,0 +1,26 @@
+{
+  "name": "technation-assessor",
+  "version": "1.0.0",
+  "description": "Autonomous Tech Nation Visa Assessment Agent",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "assess": "npx tsx scripts/run_technation_assessment.ts",
+    "extract-guides": "npx tsx scripts/extract_technation_guides.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.0",
+    "@google/genai": "^0.7.0",
+    "canvas": "^3.2.3",
+    "dotenv": "^16.4.5",
+    "mammoth": "^1.7.2",
+    "openai": "^6.34.0",
+    "pdfjs-dist": "^5.6.205",
+    "tsx": "^4.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3"
+  }
+}
