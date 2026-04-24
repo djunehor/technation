@@ -1,0 +1,40 @@
+:root {
+    --bg: #ffffff;
+    --text: #111827;
+    --secondary: #6b7280;
+    --primary: #2563eb;
+    --border: #e5e7eb;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; line-height: 1.6; }
+
+.container { width: 100%; padding: 1rem; }
+
+header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1rem; }
+h1 { font-size: 1.25rem; font-weight: 600; }
+
+.btn-upload { background: var(--primary); color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 500; cursor: pointer; font-size: 14px; }
+.btn-upload:hover { background: #1d4ed8; }
+
+.status-line { font-size: 0.875rem; color: var(--secondary); margin-bottom: 2rem; }
+
+.content-area { display: flex; flex-direction: column; gap: 1.5rem; }
+
+.log-block { border-left: 2px solid var(--border); padding-left: 1rem; color: var(--secondary); font-size: 0.9rem; }
+.log-block.accent { border-color: var(--primary); color: var(--text); font-weight: 500; }
+
+.result-block { border-top: 1px solid var(--border); padding-top: 2rem; margin-top: 2rem; }
+.verdict-tag { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 1rem; }
+.verdict-tag.endorse { background: #dcfce7; color: #166534; }
+.verdict-tag.reject { background: #fee2e2; color: #991b1b; }
+
+.markdown-body h1, .markdown-body h2 { margin-top: 1.5rem; margin-bottom: 1rem; font-size: 1.1rem; }
+.markdown-body p { margin-bottom: 1rem; }
+.markdown-body ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+
+.criteria-grid { display: grid; gap: 1rem; margin-top: 1.5rem; }
+.criteria-card { border: 1px solid var(--border); padding: 1rem; border-radius: 8px; }
+.criteria-name { font-weight: 600; display: flex; justify-content: space-between; margin-bottom: 0.5rem; }
+.met { color: #059669; }
+.fail { color: #dc2626; }

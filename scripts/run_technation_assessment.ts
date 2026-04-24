@@ -13,12 +13,12 @@ async function main() {
   
   if (!applicationPath) {
     console.error('Usage: tsx scripts/run_technation_assessment.ts <path_to_application_pdf_or_dir> [pathway] [target_criteria]');
-    console.error('Example: tsx scripts/run_technation_assessment.ts app.pdf "Exceptional Talent" "OC2, OC3"');
+    console.error('Example: tsx scripts/run_technation_assessment.ts ./TECHNATION/Draft "Exceptional Talent" "OC2, OC3"');
     process.exit(1);
   }
 
   Logger.setLogFile('technation.log');
-  Logger.info('Starting Tech Nation Assessment...');
+  Logger.info('Starting Tech Nation Assessment CLI...');
 
   const agent = new TechnationAgent();
   await agent.initialize();
@@ -26,7 +26,9 @@ async function main() {
   let applicationText = '';
   let candidateName = '';
 
-  if (fs.lstatSync(applicationPath).isDirectory()) {
+  const stats = fs.lstatSync(applicationPath);
+
+  if (stats.isDirectory()) {
     candidateName = path.basename(applicationPath);
     const files = fs.readdirSync(applicationPath).filter(f => f.endsWith('.pdf') || f.endsWith('.docx'));
     for (const file of files) {
@@ -39,61 +41,36 @@ async function main() {
       }
       
       if (result.text.includes('[OCR FAILED') || result.text.includes('[DOCX EXTRACTION FAILED')) {
-        const failedPages = result.text.match(/\[(OCR|DOCX EXTRACTION) FAILED.*\]/g);
-        console.error(`\n❌ FATAL: Extraction failed for ${file}:\n${failedPages?.join('\n')}`);
-        process.exit(1);
+        console.warn(`⚠️ Warning: Extraction issues detected in ${file}`);
       }
       applicationText += `### DOCUMENT: ${file}\n${result.text}\n\n`;
     }
   } else {
-    candidateName = path.basename(applicationPath, '.pdf');
-    const textPath = path.join('scratch/technation_text', `${candidateName}.txt`);
-  
-    if (fs.existsSync(textPath)) {
-      const cachedText = fs.readFileSync(textPath, 'utf-8');
-      if (!cachedText.includes('[OCR FAILED')) {
-        console.log(`Using valid cached text for ${applicationPath}...`);
-        applicationText = cachedText;
-      } else {
-        console.log(`Cached text for ${applicationPath} has failures. Re-extracting...`);
-      }
-    }
-    
-    if (!applicationText) {
-      console.log(`Processing ${applicationPath}...`);
-      let result;
-      if (applicationPath.endsWith('.pdf')) {
-        result = await convertPdfToText(applicationPath);
-      } else if (applicationPath.endsWith('.docx')) {
-        result = await convertDocxToText(applicationPath);
-      } else {
-        console.error(`❌ Unsupported file format: ${path.extname(applicationPath)}`);
-        process.exit(1);
-      }
-      applicationText = result.text;
-    }
-
-    if (applicationText.includes('[OCR FAILED')) {
-      const failedPages = applicationText.match(/\[OCR FAILED for Page \d+\]/g);
-      console.error(`\n❌ FATAL: PDF extraction failed for the following pages:\n${failedPages?.join('\n')}`);
-      console.error('\nAssessment halted to save credits. Please check the scan quality of these pages.');
+    candidateName = path.basename(applicationPath, path.extname(applicationPath));
+    console.log(`Processing ${applicationPath}...`);
+    let result;
+    if (applicationPath.endsWith('.pdf')) {
+      result = await convertPdfToText(applicationPath);
+    } else if (applicationPath.endsWith('.docx')) {
+      result = await convertDocxToText(applicationPath);
+    } else {
+      console.error(`❌ Unsupported file format: ${path.extname(applicationPath)}`);
       process.exit(1);
     }
+    applicationText = result.text;
   }
 
-  const result = await agent.assess(candidateName, applicationText, specifiedPathway, targetCriteria);
+  const result = await agent.assess(candidateName, applicationText, {
+    pathway: specifiedPathway,
+    targetCriteria,
+    onUpdate: (msg) => console.log(`[PROGRESS] ${msg}`)
+  });
 
-  console.log('\n--- AUDIT TRAIL: ASSESSMENT DEBATE ---\n');
-  for (const round of result.rounds) {
-    console.log(`\n[ROUND ${round.roundNumber}]`);
-    console.log(`--- REVIEWER ---\n${round.reviewerNotes.substring(0, 500)}...\n`);
-    console.log(`--- ADVERSARY ---\n${round.adversaryNotes.substring(0, 500)}...\n`);
-    console.log(`Consensus: ${round.consensusReached ? '✅' : '❌'}`);
-  }
-
-  const reportPathJson = `scratch/assessment_${candidateName}_${Date.now()}.json`;
-  const reportPathMd = `scratch/assessment_${candidateName}_${Date.now()}.md`;
+  const reportPathJson = `./scratch/assessment_${candidateName}_${Date.now()}.json`;
+  const reportPathMd = `./scratch/assessment_${candidateName}_${Date.now()}.md`;
   
+  if (!fs.existsSync('./scratch')) fs.mkdirSync('./scratch', { recursive: true });
+
   fs.writeFileSync(reportPathJson, JSON.stringify(result, null, 2));
   
   // Generate a clean Markdown report

@@ -33,6 +33,7 @@ scratch/
 temp/
 TECHNATION/Draft/*.html
 TECHNATION/Draft/temp_style.css
-
+uploads/
+data/
 # Other
 .gemini/

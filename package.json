@@ -6,18 +6,33 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "assess": "npx tsx scripts/run_technation_assessment.ts",
-    "extract-guides": "npx tsx scripts/extract_technation_guides.ts"
+    "start": "node dist/server/app.js",
+    "dev": "npx tsx src/server/app.ts",
+    "assess": "npx tsx scripts/run_technation_assessment.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.0",
     "@google/genai": "^0.7.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.19",
+    "@types/eventsource": "^1.1.15",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.1.0",
+    "@types/uuid": "^10.0.0",
+    "axios": "^1.15.2",
+    "better-sqlite3": "^12.9.0",
     "canvas": "^3.2.3",
+    "cors": "^2.8.6",
     "dotenv": "^16.4.5",
+    "eventsource": "^4.1.0",
+    "express": "^5.2.1",
+    "form-data": "^4.0.5",
     "mammoth": "^1.7.2",
+    "multer": "^2.1.1",
     "openai": "^6.34.0",
     "pdfjs-dist": "^5.6.205",
-    "tsx": "^4.7.1"
+    "tsx": "^4.7.1",
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
