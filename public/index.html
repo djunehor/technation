@@ -14,11 +14,22 @@
     <div class="container">
         <header>
             <h1>Technation Assessor</h1>
-            <button class="btn-upload" onclick="document.getElementById('fileInput').click()">
-                Upload Evidence
-                <input type="file" id="fileInput" multiple hidden>
-            </button>
+            <div class="actions">
+                <button class="btn-upload" onclick="document.getElementById('fileInput').click()">
+                    Upload Evidence
+                    <input type="file" id="fileInput" multiple hidden>
+                    <input type="file" id="folderInput" webkitdirectory directory hidden>
+                </button>
+            </div>
         </header>
+
+        <div id="dropZone" class="drop-zone">
+            <div class="drop-zone-content">
+                <span class="icon">📁</span>
+                <p>Drag & Drop files or folders here</p>
+                <p class="small">or <span class="link" onclick="document.getElementById('fileInput').click()">browse files</span> or <span class="link" onclick="document.getElementById('folderInput').click()">browse folders</span></p>
+            </div>
+        </div>
 
         <div id="status" class="status-line">Ready to assess documents</div>
 

@@ -1,17 +1,77 @@
 const API_BASE_URL = window.location.origin;
 const fileInput = document.getElementById('fileInput');
+const folderInput = document.getElementById('folderInput');
+const dropZone = document.getElementById('dropZone');
 const statusLine = document.getElementById('status');
 const mainContent = document.getElementById('mainContent');
 
-fileInput.addEventListener('change', async (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
+// ─── Drag & Drop Logic ───────────────────────────────────────────────────
 
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('drag-over');
+});
+
+dropZone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    
+    const items = e.dataTransfer.items;
+    const files = [];
+    
+    const traverse = async (entry, path = '') => {
+        if (entry.isFile) {
+            const file = await new Promise((resolve) => entry.file(resolve));
+            // Store the relative path in a custom property so we can use it in FormData
+            file.relativePath = path + entry.name;
+            files.push(file);
+        } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            const entries = await new Promise((resolve) => reader.readEntries(resolve));
+            for (const subEntry of entries) {
+                await traverse(subEntry, path + entry.name + '/');
+            }
+        }
+    };
+
+    const promises = [];
+    for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry();
+        if (entry) promises.push(traverse(entry));
+    }
+    
+    await Promise.all(promises);
+    if (files.length > 0) startAssessment(files);
+});
+
+// ─── File Input Logic ───────────────────────────────────────────────────
+
+const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files).map(f => {
+        f.relativePath = f.webkitRelativePath || f.name;
+        return f;
+    });
+    if (files.length > 0) startAssessment(files);
+};
+
+fileInput.addEventListener('change', handleFileSelect);
+folderInput.addEventListener('change', handleFileSelect);
+
+// ─── Assessment Logic ────────────────────────────────────────────────────
+
+async function startAssessment(files) {
     statusLine.innerText = `Processing ${files.length} documents...`;
     mainContent.innerHTML = '';
+    dropZone.style.display = 'none'; // Hide dropzone once started
     
     const formData = new FormData();
-    files.forEach(f => formData.append('files', f));
+    files.forEach(f => {
+        formData.append('files', f, f.relativePath || f.name);
+    });
     formData.append('candidateName', 'Applicant');
 
     try {
@@ -24,8 +84,9 @@ fileInput.addEventListener('change', async (e) => {
         startStreaming(assessmentId);
     } catch (error) {
         statusLine.innerText = `Error: ${error.message}`;
+        dropZone.style.display = 'block';
     }
-});
+}
 
 function addLog(message, isAccent = false) {
     const block = document.createElement('div');
@@ -61,6 +122,7 @@ async function fetchResult(id) {
 }
 
 function renderResult(result) {
+    if (!result) return;
     const block = document.createElement('div');
     block.className = 'result-block';
     

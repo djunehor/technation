@@ -25,10 +25,10 @@ export class TechnationAgent {
 
   async initialize() {
     const guidesPath = './scratch/technation_text';
-    const sourceDir = './TECHNATION';
+    const sourceDir = './guides';
     const files = [
-      'Tech Nation - Global Talent Visa Application Guide.pdf',
-      'Tech Nation Internal Assessor Guide.pdf'
+      'global_talent_visa_guide.pdf',
+      'internal_assessor_guide.pdf'
     ];
 
     if (!fs.existsSync(guidesPath)) {
@@ -43,15 +43,31 @@ export class TechnationAgent {
       const sourcePath = path.join(sourceDir, f);
 
       if (!fs.existsSync(textPath)) {
+        if (!fs.existsSync(sourcePath)) {
+          Logger.error(`Source guide PDF not found: ${sourcePath}`);
+          return `### GUIDE: ${f}\n[ERROR: Source guide not found]\n`;
+        }
+
         Logger.info(`Extracting guides from ${f}...`);
-        const result = spawnSync('pdftotext', [sourcePath, '-'], { encoding: 'utf-8' });
-        if (result.stdout) {
-          fs.writeFileSync(textPath, result.stdout);
+        try {
+          const result = spawnSync('pdftotext', [sourcePath, '-'], { encoding: 'utf-8' });
+          if (result.stdout) {
+            fs.writeFileSync(textPath, result.stdout);
+          } else if (result.error) {
+            Logger.error(`Failed to run pdftotext for ${f}: ${result.error.message}`);
+          }
+        } catch (e) {
+          Logger.error(`Unexpected error during extraction of ${f}:`, e);
         }
       }
 
-      const content = fs.readFileSync(textPath, 'utf-8');
-      return `### GUIDE: ${f}\n${content}\n`;
+      if (fs.existsSync(textPath)) {
+        const content = fs.readFileSync(textPath, 'utf-8');
+        return `### GUIDE: ${f}\n${content}\n`;
+      } else {
+        Logger.error(`Guide text file missing and could not be extracted: ${textPath}`);
+        return `### GUIDE: ${f}\n[ERROR: Guide content missing]\n`;
+      }
     }).join('\n');
   }
 

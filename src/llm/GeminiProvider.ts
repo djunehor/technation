@@ -22,6 +22,8 @@ export interface GeminiProviderOptions {
   apiKey?: string;
 }
 
+const MAX_REQUEST_CHARS = 1000000; // 1M chars safety limit
+
 export class GeminiProvider implements LLMProvider {
   readonly name = 'gemini';
   readonly model: string;
@@ -58,6 +60,15 @@ export class GeminiProvider implements LLMProvider {
       ? [{ functionDeclarations: tools.map(this.toolToFunctionDeclaration.bind(this)) }]
       : [];
 
+    // Safety truncation
+    let finalUserMessage = lastUserMessage;
+    if (finalUserMessage.length > MAX_REQUEST_CHARS) {
+      Logger.warn(`Trimming extremely large user message from ${finalUserMessage.length} to ${MAX_REQUEST_CHARS} chars.`);
+      finalUserMessage = finalUserMessage.substring(0, MAX_REQUEST_CHARS) + "\n\n[TRUNCATED DUE TO SIZE]";
+    }
+
+    Logger.info(`Gemini Request: model=${this.model}, systemInstrLen=${systemInstruction.length}, historyLen=${history.length}, lastMsgLen=${finalUserMessage.length}`);
+
     const chat = this.client.chats.create({
       model: this.model,
       config: {
@@ -69,69 +80,59 @@ export class GeminiProvider implements LLMProvider {
       history,
     });
 
-    const response = await withRetry(
-      () => chat.sendMessage({ message: lastUserMessage }),
-      { maxAttempts: 5, delay: 2000 }
-    );
+    try {
+      const response = await withRetry(
+        () => chat.sendMessage({ message: finalUserMessage }),
+        { maxAttempts: 5, delay: 2000 }
+      );
 
-    // Extract text content
-    const textParts = response.candidates?.[0]?.content?.parts
-      ?.filter((p) => p.text)
-      .map((p) => p.text ?? '')
-      .join('') ?? '';
+      // Extract text content
+      const textParts = response.candidates?.[0]?.content?.parts
+        ?.filter((p) => p.text)
+        .map((p) => p.text ?? '')
+        .join('') ?? '';
 
-    const functionCallParts = response.candidates?.[0]?.content?.parts?.filter(
-      (p) => p.functionCall,
-    ) ?? [];
+      const functionCallParts = response.candidates?.[0]?.content?.parts?.filter(
+        (p) => p.functionCall,
+      ) ?? [];
 
-    if (!textParts && functionCallParts.length === 0) {
-      Logger.debug("Empty response from Gemini:", JSON.stringify(response, null, 2));
-    }
+      if (!textParts && functionCallParts.length === 0) {
+        Logger.debug("Empty response from Gemini:", JSON.stringify(response, null, 2));
+      }
 
-    const toolCalls: LLMToolCall[] = functionCallParts.map((p, idx: number) => ({
-      id: `gemini-call-${Date.now()}-${idx}`,
-      type: 'function',
-      name: p.functionCall!.name ?? '',
-      arguments: (p.functionCall!.args ?? {}) as Record<string, unknown>,
-    }));
+      const toolCalls: LLMToolCall[] = functionCallParts.map((p, idx: number) => ({
+        id: `gemini-call-${Date.now()}-${idx}`,
+        type: 'function',
+        name: p.functionCall!.name ?? '',
+        arguments: (p.functionCall!.args ?? {}) as Record<string, unknown>,
+      }));
 
-    const finishReason = this.mapFinishReason(
-      response.candidates?.[0]?.finishReason ?? 'STOP',
-    );
+      const finishReason = this.mapFinishReason(
+        response.candidates?.[0]?.finishReason ?? 'STOP',
+      );
 
-    const usage = {
-      inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
-    };
-
-    if (response.usageMetadata) {
-      Logger.info(`Gemini Usage: Prompt=${response.usageMetadata.promptTokenCount}, Candidates=${response.usageMetadata.candidatesTokenCount}, Total=${response.usageMetadata.totalTokenCount}`);
-    }
-
-    if (finishReason === 'error' && !textParts && toolCalls.length === 0) {
-      const rawError = response.candidates?.[0]?.finishReason;
-      return {
-        content: `ALERT: The last tool call was malformed (${rawError}). Please re-issue the command with correct arguments. Ensure you use the exact tool name and schema.`,
-        finishReason: 'error',
-        usage,
+      const usage = {
+        inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
+        outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
       };
-    }
 
-    // Handle empty responses by injecting an error/prompt to continue
-    if (!textParts && toolCalls.length === 0) {
+      if (response.usageMetadata) {
+        Logger.info(`Gemini Usage: Prompt=${response.usageMetadata.promptTokenCount}, Candidates=${response.usageMetadata.candidatesTokenCount}, Total=${response.usageMetadata.totalTokenCount}`);
+      }
+
       return {
-        content: 'ALERT: The LLM returned an empty response. Please acknowledge this and continue your forensic analysis or provide your final table-backed answer.',
-        finishReason: 'stop',
+        content: textParts || undefined,
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        finishReason,
         usage,
-      };
+      } as LLMResponse;
+    } catch (e: any) {
+      Logger.error(`Gemini Chat Error: ${e.message}`, e);
+      if (e.message.includes('INVALID_ARGUMENT')) {
+        Logger.error(`Request Detail: lastUserMessage preview: ${finalUserMessage.substring(0, 500)}...`);
+      }
+      throw e;
     }
-
-    return {
-      content: textParts || undefined,
-      ...(toolCalls.length > 0 ? { toolCalls } : {}),
-      finishReason,
-      usage,
-    } as LLMResponse;
   }
 
   async streamChat(

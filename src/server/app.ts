@@ -14,10 +14,19 @@ import { Logger } from '../utils/logger.js';
 dotenv.config();
 
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+// Increase multer limits just in case, though default is usually fine
+const upload = multer({ 
+  dest: 'uploads/',
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB per file
+    fieldSize: 100 * 1024 * 1024 // 100MB for text fields
+  }
+});
 
 app.use(cors());
-app.use(express.json());
+// Increase Express body limits for large JSON/URL-encoded payloads
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.static('public'));
 
 const UPLOAD_ROOT = 'uploads';
@@ -52,19 +61,26 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
 
       for (const file of files) {
         const destPath = path.join(sessionDir, file.originalname);
+        const destDir = path.dirname(destPath);
+        if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+        
         fs.renameSync(file.path, destPath);
 
         assessmentStore.addLog(assessmentId, `Processing ${file.originalname}...`);
         
         let text = '';
-        if (file.originalname.toLowerCase().endsWith('.pdf')) {
+        const ext = file.originalname.toLowerCase();
+        if (ext.endsWith('.pdf')) {
           const result = await convertPdfToText(destPath);
           text = result.text;
-        } else if (file.originalname.toLowerCase().endsWith('.docx')) {
+        } else if (ext.endsWith('.docx')) {
           const result = await convertDocxToText(destPath);
           text = result.text;
-        } else {
+        } else if (ext.match(/\.(txt|md|csv|json)$/)) {
           text = fs.readFileSync(destPath, 'utf-8');
+        } else {
+          assessmentStore.addLog(assessmentId, `⚠️ Skipping ${file.originalname}: Binary/Image files are not yet supported for direct text extraction.`);
+          text = `[FILE CONTENT SKIPPED: ${file.originalname} (Binary/Image)]`;
         }
 
         fullText += `\n--- DOCUMENT: ${file.originalname} ---\n${text}\n`;

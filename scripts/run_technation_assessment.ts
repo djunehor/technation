@@ -30,14 +30,21 @@ async function main() {
 
   if (stats.isDirectory()) {
     candidateName = path.basename(applicationPath);
-    const files = fs.readdirSync(applicationPath).filter(f => f.endsWith('.pdf') || f.endsWith('.docx'));
+    // Use recursive readdir to find all files in subfolders
+    const allEntries = fs.readdirSync(applicationPath, { recursive: true }) as string[];
+    const files = allEntries.filter(f => {
+      const fullPath = path.join(applicationPath, f);
+      return fs.lstatSync(fullPath).isFile() && (f.endsWith('.pdf') || f.endsWith('.docx'));
+    });
+
     for (const file of files) {
       console.log(`Processing ${file}...`);
+      const fullPath = path.join(applicationPath, file);
       let result;
       if (file.endsWith('.pdf')) {
-        result = await convertPdfToText(path.join(applicationPath, file));
+        result = await convertPdfToText(fullPath);
       } else {
-        result = await convertDocxToText(path.join(applicationPath, file));
+        result = await convertDocxToText(fullPath);
       }
       
       if (result.text.includes('[OCR FAILED') || result.text.includes('[DOCX EXTRACTION FAILED')) {

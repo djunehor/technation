@@ -31,8 +31,8 @@ yarn-error.log*
 # Scratch/Temp files
 scratch/
 temp/
-TECHNATION/Draft/*.html
-TECHNATION/Draft/temp_style.css
+guides/
+# uploads/
 uploads/
 data/
 # Other
