@@ -20,6 +20,17 @@ body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-ser
     min-height: 100vh;
 }
 
+@media (max-width: 640px) {
+    .container {
+        padding: 1rem;
+    }
+    header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+    }
+}
+
 header { 
     display: flex; 
     justify-content: space-between; 
@@ -91,9 +102,23 @@ h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.04em; color: var(--
 .markdown-body p { margin-bottom: 1.25rem; color: #374151; }
 .markdown-body ul { margin-left: 1.75rem; margin-bottom: 1.25rem; }
 
-.criteria-grid { display: grid; gap: 1.5rem; margin-top: 2.5rem; }
+.criteria-grid { 
+    display: grid; 
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem; 
+    margin-top: 2.5rem; 
+}
 .criteria-card { border: 1px solid var(--border); padding: 1.5rem; border-radius: 14px; background: #fff; transition: transform 0.2s; }
 .criteria-card:hover { transform: translateY(-2px); border-color: #d1d5db; }
 .criteria-name { font-weight: 700; display: flex; justify-content: space-between; margin-bottom: 1rem; font-size: 1.1rem; color: #111827; }
 .met { color: #059669; }
 .fail { color: #dc2626; }
+
+@media (max-width: 480px) {
+    .criteria-grid {
+        grid-template-columns: 1fr;
+    }
+    .result-block {
+        padding: 1.5rem;
+    }
+}

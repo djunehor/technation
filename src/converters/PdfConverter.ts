@@ -22,10 +22,13 @@ export async function convertPdfToText(filePath: string): Promise<ConversionResu
 
   let text = pdfResult.stdout?.trim() || '';
 
-  // 2. If text is empty or very short, it might be a scanned PDF. Fallback to OCR.
-  if (text.length < 50) {
+  // 2. If text is sparse or mostly URLs, it might be a scanned PDF or a "Print to PDF" with images. Fallback to OCR.
+  const urlCount = (text.match(/https?:\/\//g) || []).length;
+  const isSparse = text.length < 300 || (urlCount > 0 && text.length / urlCount < 100);
+
+  if (isSparse) {
     try {
-      const tempImgBase = path.join(SCRATCH_DIR, `scan_${path.basename(filePath, '.pdf')}`);
+      const tempImgBase = path.join(SCRATCH_DIR, `scan_${path.basename(filePath, '.pdf')}_${Date.now()}`);
       
       // Render PDF pages to images
       const renderResult = spawnSync('pdftoppm', [

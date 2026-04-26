@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { GoogleGenAI, type Content, type Tool, type FunctionDeclaration, type Schema } from '@google/genai';
 import { withRetry } from '../utils/retry.js';
 import { Logger } from '../utils/logger.js';
@@ -62,12 +63,20 @@ export class GeminiProvider implements LLMProvider {
 
     // Safety truncation
     let finalUserMessage = lastUserMessage;
-    if (finalUserMessage.length > MAX_REQUEST_CHARS) {
-      Logger.warn(`Trimming extremely large user message from ${finalUserMessage.length} to ${MAX_REQUEST_CHARS} chars.`);
-      finalUserMessage = finalUserMessage.substring(0, MAX_REQUEST_CHARS) + "\n\n[TRUNCATED DUE TO SIZE]";
+    const firstPart = Array.isArray(finalUserMessage) ? (finalUserMessage[0] as any).text : finalUserMessage;
+    
+    if (typeof firstPart === 'string' && firstPart.length > MAX_REQUEST_CHARS) {
+      Logger.warn(`Trimming extremely large user message from ${firstPart.length} to ${MAX_REQUEST_CHARS} chars.`);
+      const trimmed = firstPart.substring(0, MAX_REQUEST_CHARS) + "\n\n[TRUNCATED DUE TO SIZE]";
+      if (Array.isArray(finalUserMessage)) {
+        (finalUserMessage[0] as any).text = trimmed;
+      } else {
+        finalUserMessage = trimmed;
+      }
     }
 
-    Logger.info(`Gemini Request: model=${this.model}, systemInstrLen=${systemInstruction.length}, historyLen=${history.length}, lastMsgLen=${finalUserMessage.length}`);
+    const msgLen = typeof firstPart === 'string' ? firstPart.length : 0;
+    Logger.info(`Gemini Request: model=${this.model}, systemInstrLen=${systemInstruction.length}, historyLen=${history.length}, lastMsgLen=${msgLen}, parts=${Array.isArray(finalUserMessage) ? finalUserMessage.length : 1}`);
 
     const chat = this.client.chats.create({
       model: this.model,
@@ -82,18 +91,18 @@ export class GeminiProvider implements LLMProvider {
 
     try {
       const response = await withRetry(
-        () => chat.sendMessage({ message: finalUserMessage }),
+        () => chat.sendMessage({ message: finalUserMessage as any }),
         { maxAttempts: 5, delay: 2000 }
       );
 
       // Extract text content
       const textParts = response.candidates?.[0]?.content?.parts
-        ?.filter((p) => p.text)
-        .map((p) => p.text ?? '')
+        ?.filter((p: any) => p.text)
+        .map((p: any) => p.text ?? '')
         .join('') ?? '';
 
       const functionCallParts = response.candidates?.[0]?.content?.parts?.filter(
-        (p) => p.functionCall,
+        (p: any) => p.functionCall,
       ) ?? [];
 
       if (!textParts && functionCallParts.length === 0) {
@@ -129,7 +138,10 @@ export class GeminiProvider implements LLMProvider {
     } catch (e: any) {
       Logger.error(`Gemini Chat Error: ${e.message}`, e);
       if (e.message.includes('INVALID_ARGUMENT')) {
-        Logger.error(`Request Detail: lastUserMessage preview: ${finalUserMessage.substring(0, 500)}...`);
+        const preview = Array.isArray(finalUserMessage) 
+          ? JSON.stringify(finalUserMessage).substring(0, 500)
+          : finalUserMessage.substring(0, 500);
+        Logger.error(`Request Detail: lastUserMessage preview: ${preview}...`);
       }
       throw e;
     }
@@ -205,7 +217,18 @@ export class GeminiProvider implements LLMProvider {
       }
 
       if (msg.role === 'user') {
-        history.push({ role: 'user', parts: [{ text: msg.content }] });
+        const parts: any[] = [{ text: msg.content }];
+        if (msg.attachments) {
+          for (const attachment of msg.attachments) {
+            if (attachment.data) {
+              parts.push({ inlineData: { mimeType: attachment.mimeType, data: attachment.data } });
+            } else if (fs.existsSync(attachment.path)) {
+              const data = fs.readFileSync(attachment.path).toString('base64');
+              parts.push({ inlineData: { mimeType: attachment.mimeType, data } });
+            }
+          }
+        }
+        history.push({ role: 'user', parts });
       } else if (msg.role === 'assistant') {
         const parts: Content['parts'] = [];
         if (msg.content) parts.push({ text: msg.content });
@@ -229,12 +252,21 @@ export class GeminiProvider implements LLMProvider {
       }
     }
 
-    if (!lastUserMessage && messages.length > 0) {
-      // Fallback: use the last message content
-      lastUserMessage = messages[messages.length - 1]!.content;
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.role === 'user' && lastMsg.attachments && lastMsg.attachments.length > 0) {
+      const parts: any[] = [{ text: lastUserMessage || 'Analyzing documents...' }];
+      for (const attachment of lastMsg.attachments) {
+        if (attachment.data) {
+          parts.push({ inlineData: { mimeType: attachment.mimeType, data: attachment.data } });
+        } else if (fs.existsSync(attachment.path)) {
+          const data = fs.readFileSync(attachment.path).toString('base64');
+          parts.push({ inlineData: { mimeType: attachment.mimeType, data } });
+        }
+      }
+      return { systemInstruction, history, lastUserMessage: parts as any };
     }
 
-    return { systemInstruction, history, lastUserMessage };
+    return { systemInstruction, history, lastUserMessage: lastUserMessage || 'Analyzing...' };
   }
 
   private toolToFunctionDeclaration(tool: ToolDefinition): FunctionDeclaration {

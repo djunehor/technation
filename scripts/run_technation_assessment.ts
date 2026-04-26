@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
 import { Logger } from '../src/utils/logger.js';
+import { assessmentStore } from '../src/server/assessmentStore.js';
+import { v4 as uuidv4 } from 'uuid';
 
 async function main() {
   const applicationPath = process.argv[2];
@@ -23,8 +25,13 @@ async function main() {
   const agent = new TechnationAgent();
   await agent.initialize();
 
+  const assessmentId = `cli-${uuidv4().substring(0, 8)}`;
+  assessmentStore.createAssessment(assessmentId, 'Applicant'); // Temporary name, will update later
+  assessmentStore.updateStatus(assessmentId, 'processing');
+
   let applicationText = '';
   let candidateName = '';
+  const attachments: import('../src/types/index.js').LLMAttachment[] = [];
 
   const stats = fs.lstatSync(applicationPath);
 
@@ -37,14 +44,30 @@ async function main() {
       return fs.lstatSync(fullPath).isFile() && (f.endsWith('.pdf') || f.endsWith('.docx'));
     });
 
-    for (const file of files) {
+    // Deduplicate: if both .docx and .pdf exist for the same name, prefer .docx
+    const docxFiles = files.filter(f => f.endsWith('.docx'));
+    const pdfFiles = files.filter(f => f.endsWith('.pdf'));
+    
+    const filteredFiles = files.filter(f => {
+      if (f.endsWith('.pdf')) {
+        const base = f.replace('.pdf', '');
+        if (docxFiles.some(df => df.replace('.docx', '') === base)) return false;
+      }
+      return true;
+    });
+
+    for (const file of filteredFiles) {
       console.log(`Processing ${file}...`);
       const fullPath = path.join(applicationPath, file);
       let result;
       if (file.endsWith('.pdf')) {
         result = await convertPdfToText(fullPath);
+        attachments.push({ type: 'file', mimeType: 'application/pdf', path: fullPath });
       } else {
         result = await convertDocxToText(fullPath);
+        if (result.attachments) {
+          attachments.push(...result.attachments);
+        }
       }
       
       if (result.text.includes('[OCR FAILED') || result.text.includes('[DOCX EXTRACTION FAILED')) {
@@ -58,6 +81,7 @@ async function main() {
     let result;
     if (applicationPath.endsWith('.pdf')) {
       result = await convertPdfToText(applicationPath);
+      attachments.push({ type: 'file', mimeType: 'application/pdf', path: applicationPath });
     } else if (applicationPath.endsWith('.docx')) {
       result = await convertDocxToText(applicationPath);
     } else {
@@ -67,11 +91,19 @@ async function main() {
     applicationText = result.text;
   }
 
+  assessmentStore.addLog(assessmentId, `Starting assessment for ${candidateName}...`);
+  
   const result = await agent.assess(candidateName, applicationText, {
     pathway: specifiedPathway,
     targetCriteria,
-    onUpdate: (msg) => console.log(`[PROGRESS] ${msg}`)
+    attachments,
+    onUpdate: (msg) => {
+      console.log(`[PROGRESS] ${msg}`);
+      assessmentStore.addLog(assessmentId, msg);
+    }
   });
+
+  assessmentStore.updateStatus(assessmentId, 'completed', result);
 
   const reportPathJson = `./scratch/assessment_${candidateName}_${Date.now()}.json`;
   const reportPathMd = `./scratch/assessment_${candidateName}_${Date.now()}.md`;

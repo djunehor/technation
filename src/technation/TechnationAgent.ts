@@ -15,7 +15,8 @@ export class TechnationAgent {
   private reviewer: LLMProvider;
   private adversary: LLMProvider;
   private judge: LLMProvider;
-  private guidesContent: string = '';
+  private applicationGuide: string = '';
+  private assessorGuide: string = '';
 
   constructor() {
     this.reviewer = getLLMProvider();
@@ -26,49 +27,37 @@ export class TechnationAgent {
   async initialize() {
     const guidesPath = './scratch/technation_text';
     const sourceDir = './guides';
-    const files = [
-      'global_talent_visa_guide.pdf',
-      'internal_assessor_guide.pdf'
-    ];
-
+    
     if (!fs.existsSync(guidesPath)) {
       fs.mkdirSync(guidesPath, { recursive: true });
     }
 
     const { spawnSync } = await import('child_process');
 
-    this.guidesContent = files.map(f => {
-      const textFile = f.replace('.pdf', '.txt');
+    const extract = (pdfName: string) => {
+      const textFile = pdfName.replace('.pdf', '.txt');
       const textPath = path.join(guidesPath, textFile);
-      const sourcePath = path.join(sourceDir, f);
+      const sourcePath = path.join(sourceDir, pdfName);
 
       if (!fs.existsSync(textPath)) {
         if (!fs.existsSync(sourcePath)) {
           Logger.error(`Source guide PDF not found: ${sourcePath}`);
-          return `### GUIDE: ${f}\n[ERROR: Source guide not found]\n`;
+          return `[ERROR: Source guide not found: ${pdfName}]`;
         }
-
-        Logger.info(`Extracting guides from ${f}...`);
+        Logger.info(`Extracting guides from ${pdfName}...`);
         try {
           const result = spawnSync('pdftotext', [sourcePath, '-'], { encoding: 'utf-8' });
           if (result.stdout) {
             fs.writeFileSync(textPath, result.stdout);
-          } else if (result.error) {
-            Logger.error(`Failed to run pdftotext for ${f}: ${result.error.message}`);
           }
-        } catch (e) {
-          Logger.error(`Unexpected error during extraction of ${f}:`, e);
-        }
+        } catch (e) {}
       }
 
-      if (fs.existsSync(textPath)) {
-        const content = fs.readFileSync(textPath, 'utf-8');
-        return `### GUIDE: ${f}\n${content}\n`;
-      } else {
-        Logger.error(`Guide text file missing and could not be extracted: ${textPath}`);
-        return `### GUIDE: ${f}\n[ERROR: Guide content missing]\n`;
-      }
-    }).join('\n');
+      return fs.existsSync(textPath) ? fs.readFileSync(textPath, 'utf-8') : `[ERROR: Missing text for ${pdfName}]`;
+    };
+
+    this.applicationGuide = extract('global_talent_visa_guide.pdf');
+    this.assessorGuide = extract('internal_assessor_guide.pdf');
   }
 
   private async cachedChat(provider: LLMProvider, messages: any[], tag: string): Promise<string> {
@@ -95,14 +84,23 @@ export class TechnationAgent {
     options?: {
       pathway?: 'Exceptional Talent' | 'Exceptional Promise',
       targetCriteria?: string,
-      onUpdate?: (message: string) => void
+      onUpdate?: (message: string) => void,
+      attachments?: import('../types/index.js').LLMAttachment[]
     }
   ): Promise<TechNationAssessment> {
-    const { pathway: specifiedPathway, onUpdate } = options || {};
+    const { pathway: specifiedPathway, onUpdate, attachments } = options || {};
     const log = (msg: string) => {
       Logger.info(msg);
       if (onUpdate) onUpdate(msg);
     };
+
+    const combinedGuides = `
+### DOCUMENT 1: OFFICIAL APPLICATION GUIDE (Rules for Applicants)
+${this.applicationGuide}
+
+### DOCUMENT 2: INTERNAL ASSESSOR GUIDE (Rules for Scoring and Decision Making)
+${this.assessorGuide}
+    `;
 
     log(`Starting Tech Nation assessment for ${candidateName}`);
 
@@ -114,7 +112,7 @@ export class TechnationAgent {
       log('Identifying candidate and pathway from documents...');
       const preAnalysisText = await this.cachedChat(this.reviewer, [
         { role: 'system', content: 'Extract the candidate name and determine if they are applying for "Exceptional Talent" or "Exceptional Promise". Output JSON: { "name": "...", "pathway": "..." }' },
-        { role: 'user', content: applicationText.substring(0, 10000) }
+        { role: 'user', content: applicationText.substring(0, 10000), attachments: attachments?.slice(0, 3) } // Only first few for pre-analysis
       ], 'pre_analysis');
 
       try {
@@ -146,39 +144,39 @@ export class TechnationAgent {
     // Initial Review
     log('Analyzing evidence...');
     currentReviewerNotes = await this.cachedChat(this.reviewer, [
-      { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + this.guidesContent },
-      { role: 'user', content: `Candidate: ${finalCandidateName}\nPathway: ${finalPathway}\n\nApplication Documents:\n${applicationText}` }
+      { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + combinedGuides },
+      { role: 'user', content: `Candidate: ${finalCandidateName}\nPathway: ${finalPathway}\n\nApplication Documents:\n${applicationText}`, attachments }
     ], 'reviewer_initial');
     log(`--- INITIAL REVIEW FULL TRANSCRIPT ---\n${currentReviewerNotes}\n`);
 
     while (!consensusReached && roundCount < maxRounds) {
       roundCount++;
-      log(`Round ${roundCount}: Adversarial Debate`);
+      log(`Round ${roundCount}: Peer Review`);
 
-      // Adversary's Turn
-      log(`Round ${roundCount}: Adversary's Turn - Checking cache or calling LLM...`);
+      // Reviewer Turn
+      log(`Round ${roundCount}: Reviewer Critique - Checking cache...`);
       currentAdversaryNotes = await this.cachedChat(this.adversary, [
-        { role: 'system', content: ADVERSARY_SYSTEM_PROMPT + '\n\n' + this.guidesContent },
-        { role: 'user', content: `Reviewer's Assessment:\n${currentReviewerNotes}\n\nCandidate Application:\n${applicationText}\n\nPlease critique the Reviewer's assessment. Be as critical as possible based on the guides.` }
+        { role: 'system', content: ADVERSARY_SYSTEM_PROMPT + '\n\n' + combinedGuides },
+        { role: 'user', content: `Assessor's Assessment:\n${currentReviewerNotes}\n\nCandidate Application:\n${applicationText}\n\nPlease critique the initial assessment using the guides.`, attachments }
       ], `adversary_r${roundCount}`);
-      log(`--- ADVERSARY CRITIQUE (Round ${roundCount}) ---\n${currentAdversaryNotes}\n`);
+      log(`--- PEER REVIEW CRITIQUE (Round ${roundCount}) ---\n${currentAdversaryNotes}\n`);
 
-      // Reviewer's Rebuttal/Update
-      log(`Round ${roundCount}: Reviewer's Rebuttal - Checking cache or calling LLM...`);
+      // Assessor Response
+      log(`Round ${roundCount}: Assessor Rebuttal - Checking cache...`);
       currentReviewerNotes = await this.cachedChat(this.reviewer, [
-        { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + this.guidesContent },
-        { role: 'user', content: `Adversary's Critique:\n${currentAdversaryNotes}\n\nCandidate Application:\n${applicationText}\n\nRespond to the critique and provide your updated (and potentially final) assessment.` }
+        { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + combinedGuides },
+        { role: 'user', content: `Reviewer's Critique:\n${currentAdversaryNotes}\n\nCandidate Application:\n${applicationText}\n\nRespond to the critique and provide your updated assessment.`, attachments }
       ], `reviewer_r${roundCount}`);
-      log(`--- REVIEWER UPDATED ASSESSMENT (Round ${roundCount}) ---\n${currentReviewerNotes}\n`);
+      log(`--- ASSESSOR UPDATED NOTES (Round ${roundCount}) ---\n${currentReviewerNotes}\n`);
 
-      // Judge's Evaluation
-      log(`Round ${roundCount}: Judge's Evaluation - Checking cache or calling LLM...`);
+      // Judge Turn
+      log(`Round ${roundCount}: Chief Endorser Evaluation - Checking cache...`);
       const judgeVerdictText = await this.cachedChat(this.judge, [
-        { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + this.guidesContent },
-        { role: 'user', content: `Reviewer's Assessment:\n${currentReviewerNotes}\n\nAdversary's Critique:\n${currentAdversaryNotes}\n\nHas consensus been reached? If so, what is the final verdict (ENDORSED or NOT ENDORSED)? If not, summarize the remaining points of contention.` }
+        { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + combinedGuides },
+        { role: 'user', content: `Assessor's Notes:\n${currentReviewerNotes}\n\nReviewer's Critique:\n${currentAdversaryNotes}\n\nReach a decision according to the guides.` }
       ], `judge_r${roundCount}`);
 
-      log(`--- JUDGE ROUND EVALUATION (Round ${roundCount}) ---\n${judgeVerdictText}\n`);
+      log(`--- CHIEF ENDORSER VERDICT (Round ${roundCount}) ---\n${judgeVerdictText}\n`);
       consensusReached = judgeVerdictText.includes('CONSENSUS REACHED') || roundCount >= maxRounds;
 
       assessment.rounds.push({
@@ -190,12 +188,13 @@ export class TechnationAgent {
       });
     }
 
-    // Final Judge verdict with structured parsing
-    log('Final Decision - Checking cache or calling LLM...');
+    // Final verdict
+    log('Finalizing Decision...');
     const finalDecisionText = await this.cachedChat(this.judge, [
-      { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + this.guidesContent + '\n\nPlease output your final decision in the following JSON format:\n{\n  "overallVerdict": "ENDORSED" | "NOT ENDORSED",\n  "pathway": "Exceptional Talent" | "Exceptional Promise",\n  "summary": "...",\n  "mandatoryCriteria": { "met": boolean, "justification": "..." },\n  "optionalCriteria": [\n    { "name": "OC1", "met": boolean, "justification": "..." },\n    ...\n  ]\n}' },
-      { role: 'user', content: `Reviewer's Final Assessment:\n${currentReviewerNotes}\n\nAdversary's Final Critique:\n${currentAdversaryNotes}\n\nPlease provide the final verdict and structured assessment.` }
+      { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + combinedGuides + '\n\nOutput JSON:\n{\n  "overallVerdict": "ENDORSED" | "NOT ENDORSED",\n  "pathway": "Exceptional Talent" | "Exceptional Promise",\n  "summary": "...",\n  "mandatoryCriteria": { "met": boolean, "justification": "..." },\n  "optionalCriteria": [\n    { "name": "OC1", "met": boolean, "justification": "..." },\n    ...\n  ]\n}' },
+      { role: 'user', content: `Assessor's Final Notes:\n${currentReviewerNotes}\n\nReviewer's Final Critique:\n${currentAdversaryNotes}` }
     ], 'final_decision');
+
     try {
       const jsonStart = finalDecisionText.indexOf('{');
       const jsonEnd = finalDecisionText.lastIndexOf('}') + 1;
@@ -207,7 +206,7 @@ export class TechnationAgent {
       assessment.summary = parsed.summary;
       assessment.mandatoryCriteria.met = parsed.mandatoryCriteria.met;
       assessment.mandatoryCriteria.justification = parsed.mandatoryCriteria.justification;
-      assessment.optionalCriteria = parsed.optionalCriteria.map((oc: { name: string; met: boolean; justification: string }, index: number) => ({
+      assessment.optionalCriteria = parsed.optionalCriteria.map((oc: any, index: number) => ({
         id: `OC${index + 1}`,
         name: oc.name,
         description: '',
@@ -216,7 +215,6 @@ export class TechnationAgent {
         evidenceReference: []
       }));
     } catch (e) {
-      Logger.error('Failed to parse structured final decision', e);
       assessment.overallVerdict = finalDecisionText.includes('ENDORSED') && !finalDecisionText.includes('NOT ENDORSED') ? 'ENDORSED' : 'NOT ENDORSED';
       assessment.summary = finalDecisionText;
     }

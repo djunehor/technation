@@ -4,15 +4,22 @@
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
+export interface LLMAttachment {
+  type: 'file';
+  mimeType: string;
+  path: string;
+  /** Optional inline data if we don't want to use File API */
+  data?: string; 
+}
+
 export interface LLMMessage {
   role: MessageRole;
   content: string;
-  /** Chain of thought or thinking process provided by some models (e.g. Kimi, DeepSeek) */
   reasoningContent?: string;
   toolCalls?: LLMToolCall[];
-  /** Only set when role === 'tool' */
   toolCallId?: string;
   toolName?: string;
+  attachments?: LLMAttachment[];
 }
 
 export interface LLMToolCall {
