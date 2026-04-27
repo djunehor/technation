@@ -121,6 +121,12 @@ async function main() {
     md += `### ${oc.name}\n**Status:** ${oc.met ? '✅ MET' : '❌ NOT MET'}\n${oc.justification}\n\n`;
   }
   
+  // Add detailed feedback from the last round of notes
+  const lastRound = result.rounds[result.rounds.length - 1];
+  if (lastRound && lastRound.reviewerNotes) {
+    md += `## Detailed Assessor Feedback\n${lastRound.reviewerNotes}\n\n`;
+  }
+  
   fs.writeFileSync(reportPathMd, md);
   
   console.log(`\n✅ Assessment Complete!`);

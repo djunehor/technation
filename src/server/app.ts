@@ -14,9 +14,12 @@ import { Logger } from '../utils/logger.js';
 dotenv.config();
 
 const app = express();
+const UPLOAD_ROOT = path.resolve(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOAD_ROOT)) fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+
 // Increase multer limits just in case, though default is usually fine
 const upload = multer({ 
-  dest: 'uploads/',
+  dest: UPLOAD_ROOT,
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB per file
     fieldSize: 100 * 1024 * 1024 // 100MB for text fields
@@ -29,8 +32,6 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.static('public'));
 
-const UPLOAD_ROOT = 'uploads';
-if (!fs.existsSync(UPLOAD_ROOT)) fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
 
 // 1. Upload & Start Assessment
 app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> => {

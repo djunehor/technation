@@ -78,22 +78,24 @@ export class GeminiProvider implements LLMProvider {
     const msgLen = typeof firstPart === 'string' ? firstPart.length : 0;
     Logger.info(`Gemini Request: model=${this.model}, systemInstrLen=${systemInstruction.length}, historyLen=${history.length}, lastMsgLen=${msgLen}, parts=${Array.isArray(finalUserMessage) ? finalUserMessage.length : 1}`);
 
-    const chat = this.client.chats.create({
+    const chat = (this.client as any).chats.create({
       model: this.model,
       config: {
         systemInstruction,
         temperature: options.temperature ?? 0.1,
         maxOutputTokens: options.maxTokens ?? 8192,
         tools: geminiTools,
+        responseMimeType: options.responseFormat?.type === 'json_object' ? 'application/json' : undefined,
+        responseSchema: options.responseFormat?.schema ? jsonSchemaPropToGeminiSchema(options.responseFormat.schema) : undefined,
       },
       history,
     });
 
     try {
       const response = await withRetry(
-        () => chat.sendMessage({ message: finalUserMessage as any }),
+        () => (chat as any).sendMessage({ message: finalUserMessage as any }),
         { maxAttempts: 5, delay: 2000 }
-      );
+      ) as any;
 
       // Extract text content
       const textParts = response.candidates?.[0]?.content?.parts
@@ -109,7 +111,7 @@ export class GeminiProvider implements LLMProvider {
         Logger.debug("Empty response from Gemini:", JSON.stringify(response, null, 2));
       }
 
-      const toolCalls: LLMToolCall[] = functionCallParts.map((p, idx: number) => ({
+      const toolCalls: LLMToolCall[] = functionCallParts.map((p: any, idx: number) => ({
         id: `gemini-call-${Date.now()}-${idx}`,
         type: 'function',
         name: p.functionCall!.name ?? '',
@@ -123,10 +125,12 @@ export class GeminiProvider implements LLMProvider {
       const usage = {
         inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
         outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+        cacheHitTokens: response.usageMetadata?.cachedContentTokenCount ?? 0,
+        cacheMissTokens: (response.usageMetadata?.promptTokenCount ?? 0) - (response.usageMetadata?.cachedContentTokenCount ?? 0),
       };
 
       if (response.usageMetadata) {
-        Logger.info(`Gemini Usage: Prompt=${response.usageMetadata.promptTokenCount}, Candidates=${response.usageMetadata.candidatesTokenCount}, Total=${response.usageMetadata.totalTokenCount}`);
+        Logger.info(`Gemini Usage: Prompt=${response.usageMetadata.promptTokenCount}, Candidates=${response.usageMetadata.candidatesTokenCount}, Cached=${response.usageMetadata.cachedContentTokenCount || 0}, Total=${response.usageMetadata.totalTokenCount}`);
       }
 
       return {
@@ -182,6 +186,8 @@ export class GeminiProvider implements LLMProvider {
     const usage = {
       inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
       outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+      cacheHitTokens: response.usageMetadata?.cachedContentTokenCount ?? 0,
+      cacheMissTokens: (response.usageMetadata?.promptTokenCount ?? 0) - (response.usageMetadata?.cachedContentTokenCount ?? 0),
     };
 
     return {

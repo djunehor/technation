@@ -67,6 +67,8 @@ export class ClaudeProvider implements LLMProvider {
         usage: {
           inputTokens: response.usage.input_tokens,
           outputTokens: response.usage.output_tokens,
+          cacheHitTokens: (response.usage as any).cache_read_input_tokens || 0,
+          cacheMissTokens: response.usage.input_tokens - ((response.usage as any).cache_read_input_tokens || 0),
         }
       };
     } catch (error) {

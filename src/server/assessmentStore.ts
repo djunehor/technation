@@ -12,8 +12,17 @@ class AssessmentStore extends EventEmitter {
 
   updateStatus(id: string, status: string, result?: any) {
     if (result) {
-      db.prepare('UPDATE assessments SET status = ?, result = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(status, JSON.stringify(result), id);
+      db.prepare('UPDATE assessments SET status = ?, result = ?, candidate_name = ?, input_tokens = ?, output_tokens = ?, cache_hit_tokens = ?, total_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(
+          status, 
+          JSON.stringify(result), 
+          result.candidateName || 'Applicant', 
+          result.usage?.inputTokens || 0,
+          result.usage?.outputTokens || 0,
+          result.usage?.cacheHitTokens || 0,
+          result.totalCostUSD || 0,
+          id
+        );
     } else {
       db.prepare('UPDATE assessments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run(status, id);

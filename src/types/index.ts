@@ -49,6 +49,10 @@ export interface LLMResponse {
 export interface LLMOptions {
   temperature?: number;
   maxTokens?: number;
+  responseFormat?: {
+    type: 'json_object' | 'text';
+    schema?: JSONSchemaProperty;
+  };
 }
 
 export interface LLMProvider {

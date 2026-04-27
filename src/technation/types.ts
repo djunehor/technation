@@ -1,4 +1,6 @@
 
+import { LLMUsage } from '../types/index.js';
+
 export type Verdict = 'ENDORSED' | 'NOT ENDORSED' | 'INCONCLUSIVE';
 
 export interface AssessmentCriteria {
@@ -15,9 +17,18 @@ export interface TechNationAssessment {
   pathway: 'Exceptional Talent' | 'Exceptional Promise';
   mandatoryCriteria: AssessmentCriteria;
   optionalCriteria: AssessmentCriteria[];
+  furtherDetails: {
+    outstandingTrackRecord: boolean;
+    strengthOfEvidence: boolean;
+    meritOfPresenceInUK: boolean;
+    sufficientLeadershipEvidence: boolean;
+    evidenceWithinFiveYears: boolean;
+  };
   overallVerdict: Verdict;
   summary: string;
   rounds: AssessmentRound[];
+  usage?: LLMUsage;
+  totalCostUSD?: number;
 }
 
 export interface AssessmentRound {
