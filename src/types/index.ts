@@ -6,6 +6,7 @@ export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface LLMAttachment {
   type: 'file';
+  name?: string;
   mimeType: string;
   path: string;
   /** Optional inline data if we don't want to use File API */

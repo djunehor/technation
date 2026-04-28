@@ -1,17 +1,14 @@
 
 import { getLLMProvider } from '../llm/ProviderFactory.js';
-import type { LLMProvider } from '../types/index.js';
-import { REVIEWER_SYSTEM_PROMPT, ADVERSARY_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT } from './prompts.js';
+import type { LLMProvider, LLMAttachment } from '../types/index.js';
+import { REVIEWER_SYSTEM_PROMPT, ADVERSARY_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, MODULAR_MODE_INSTRUCTIONS } from './prompts.js';
 import type { TechNationAssessment } from './types.js';
 import { Logger } from '../utils/logger.js';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import { CostService } from '../utils/CostService.js';
 import type { LLMUsage } from '../types/index.js';
 
-const CACHE_DIR = 'scratch/agent_cache';
-if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 export class TechnationAgent {
   private reviewer: LLMProvider;
@@ -64,15 +61,7 @@ export class TechnationAgent {
     this.assessorGuide = extract('technation_asssessor_internal_guide.pdf');
   }
 
-  private async cachedChat(provider: any, messages: any[], tag: string, options: any = {}): Promise<string> {
-    const hash = crypto.createHash('md5').update(JSON.stringify({ messages, options })).digest('hex');
-    const cachePath = path.join(CACHE_DIR, `${tag}_${hash}.txt`);
-
-    if (fs.existsSync(cachePath)) {
-      Logger.info(`[CACHE HIT] Loading ${tag} response from cache...`);
-      return fs.readFileSync(cachePath, 'utf-8');
-    }
-
+  private async chat(provider: any, messages: any[], tag: string, options: any = {}): Promise<string> {
     const response = await (provider as LLMProvider).chat(messages, [], options);
     const content = response.content || '';
 
@@ -88,10 +77,119 @@ export class TechnationAgent {
       Logger.info(`[COST] ${tag} (${model}): $${cost.toFixed(6)} (Usage: ${response.usage.inputTokens} in, ${response.usage.outputTokens} out)`);
     }
 
-    if (content) {
-      fs.writeFileSync(cachePath, content);
-    }
     return content;
+  }
+  private async sortEvidence(applicationText: string, log: (msg: string) => void, attachments?: LLMAttachment[]): Promise<Record<string, { text: string, attachments: LLMAttachment[] }>> {
+    // Extract all document names first
+    const docNames: string[] = [];
+    const chunks = applicationText.split('\n--- DOCUMENT: ');
+    for (const chunk of chunks) {
+      if (!chunk.trim()) continue;
+      const name = chunk.substring(0, chunk.indexOf(' ---')).trim();
+      if (name) docNames.push(name);
+    }
+
+    const sortingPrompt = `
+Analyze the following document names and group them into these categories for UK Global Talent Tech Nation assessment:
+1. ELIGIBILITY: CV, Personal Statement, Career history.
+2. LETTERS: The 3 Recommendation Letters.
+3. MANDATORY: Evidence for Mandatory Criterion (MC).
+4. OC1, OC2, OC3, OC4: Evidence for the Optional Criteria.
+
+DOCUMENT LIST:
+${docNames.join('\n')}
+
+Output JSON only:
+{
+  "ELIGIBILITY": ["name1.pdf", ...],
+  "LETTERS": ["name2.pdf", ...],
+  "MANDATORY": [...],
+  "OC1": [...],
+  "OC2": [...],
+  "OC3": [...],
+  "OC4": [...]
+}
+    `;
+
+    const response = await this.chat(this.reviewer, [
+      { role: 'system', content: sortingPrompt },
+      { role: 'user', content: 'Map the provided document list into the JSON structure.' }
+    ], 'sorting');
+
+    const result: Record<string, { text: string, attachments: LLMAttachment[] }> = {
+      'ELIGIBILITY': { text: '', attachments: [] },
+      'LETTERS': { text: '', attachments: [] },
+      'MANDATORY': { text: '', attachments: [] },
+      'OC1': { text: '', attachments: [] },
+      'OC2': { text: '', attachments: [] },
+      'OC3': { text: '', attachments: [] },
+      'OC4': { text: '', attachments: [] }
+    };
+
+    try {
+      const mapping = JSON.parse(response.substring(response.indexOf('{'), response.lastIndexOf('}') + 1));
+      log(`[SORTING COMPLETED] Evidence Map: ${JSON.stringify(mapping, null, 2)}`);
+      const documents = applicationText.split('\n--- DOCUMENT: ');
+      
+      for (const docChunk of documents) {
+        if (!docChunk.trim()) continue;
+        const firstNewline = docChunk.indexOf(' ---');
+        const docName = docChunk.substring(0, firstNewline).trim();
+        const docContent = docChunk.substring(docChunk.indexOf('\n') + 1);
+
+        for (const [category, names] of Object.entries(mapping)) {
+          const upperCategory = category.toUpperCase();
+          if (result[upperCategory] && Array.isArray(names)) {
+            if (names.some((n: any) => n && (n.includes(docName) || docName.includes(n)))) {
+              result[upperCategory].text += `\n--- DOCUMENT: ${docName} ---\n${docContent}\n`;
+              const att = attachments?.find(a => a.name?.includes(docName) || docName.includes(a.name || ''));
+              if (att) result[upperCategory].attachments.push(att);
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      log(`Evidence sorting failed: ${e.message}. Falling back to all-in-one.`);
+      result['ELIGIBILITY'] = { text: applicationText, attachments: attachments || [] };
+    }
+
+    return result;
+  }
+
+  private async assessModule(
+    moduleName: string, 
+    context: string, 
+    moduleContent: { text: string, attachments: LLMAttachment[] }, 
+    guides: string,
+    log: (msg: string) => void
+  ): Promise<string> {
+    log(`--- Assessing ${moduleName} ---`);
+    let notes = await this.chat(this.reviewer, [
+      { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + MODULAR_MODE_INSTRUCTIONS + '\n\n' + guides },
+      { role: 'user', content: `Context:\n${context}\n\nEvidence for ${moduleName}:\n${moduleContent.text}`, attachments: moduleContent.attachments }
+    ], `${moduleName}_initial`);
+    log(`[${moduleName} ASSESSOR INITIAL NOTES]:\n${notes}\n`);
+
+    // Debate loop for module
+    let adversaryNotes = await this.chat(this.adversary, [
+      { role: 'system', content: ADVERSARY_SYSTEM_PROMPT + '\n\n' + MODULAR_MODE_INSTRUCTIONS + '\n\n' + guides },
+      { role: 'user', content: `Module: ${moduleName}\nAssessor's Notes:\n${notes}\n\nEvidence:\n${moduleContent.text}`, attachments: moduleContent.attachments }
+    ], `${moduleName}_critique`);
+    log(`[${moduleName} REVIEWER AUDIT]:\n${adversaryNotes}\n`);
+
+    notes = await this.chat(this.reviewer, [
+      { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + guides },
+      { role: 'user', content: `Reviewer's Critique:\n${adversaryNotes}\n\nEvidence:\n${moduleContent.text}\n\nFinalize your notes for ${moduleName}.`, attachments: moduleContent.attachments }
+    ], `${moduleName}_final`);
+
+    const interimVerdict = await this.chat(this.judge, [
+      { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + MODULAR_MODE_INSTRUCTIONS + '\n\n' + guides },
+      { role: 'user', content: `Module: ${moduleName}\nAssessor's Notes:\n${notes}\n\nReviewer's Critique:\n${adversaryNotes}\n\nProvide an interim verdict for this specific module.` }
+    ], `${moduleName}_verdict`);
+
+    log(`[${moduleName} FINAL VERDICT]: ${interimVerdict}`);
+
+    return `### VERDICT: ${interimVerdict}\n\n### DETAILED NOTES:\n${notes}`;
   }
 
   async assess(
@@ -111,168 +209,103 @@ export class TechnationAgent {
     };
 
     const combinedGuides = `
-### DOCUMENT 1: OFFICIAL APPLICATION GUIDE (Rules for Applicants)
+### DOCUMENT 1: OFFICIAL APPLICATION GUIDE
 ${this.applicationGuide}
 
-### DOCUMENT 2: INTERNAL ASSESSOR GUIDE (Rules for Scoring and Decision Making)
+### DOCUMENT 2: INTERNAL ASSESSOR GUIDE
 ${this.assessorGuide}
     `;
 
-    log(`Starting Tech Nation assessment for ${candidateName}`);
+    log(`Starting Modular Tech Nation assessment for ${candidateName}`);
     this.totalUsage = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
     this.totalCostUSD = 0;
 
-    // Pre-analysis: Extract Candidate Name and Pathway if not clearly provided
-    let finalCandidateName = candidateName;
-    let finalPathway = specifiedPathway;
+    const segments = await this.sortEvidence(applicationText, log, attachments);
+    
+    const manifest = `FULL DOCUMENT MANIFEST (Received and Sorted):\n${Object.entries(segments).filter(([_, s]) => s.text.trim()).map(([cat, s]) => `- ${cat}: ${s.text.split('--- DOCUMENT: ').length - 1} documents`).join('\n')}`;
 
-    if (candidateName === 'Applicant' || candidateName === 'Unknown Candidate' || !specifiedPathway) {
-      log('Identifying candidate and pathway from documents...');
-      const preAnalysisText = await this.cachedChat(this.reviewer, [
-        { role: 'system', content: 'Extract the candidate name and determine if they are applying for "Exceptional Talent" or "Exceptional Promise". Output JSON: { "name": "...", "pathway": "..." }' },
-        { role: 'user', content: applicationText.substring(0, 10000), attachments: attachments?.slice(0, 3) } // Only first few for pre-analysis
-      ], 'pre_analysis');
+    // Phase 1: Eligibility
+    const eligibilityNotes = await this.assessModule('ELIGIBILITY', `Candidate: ${candidateName}\nTarget Pathway: ${specifiedPathway || 'Unknown'}\n\n${manifest}`, segments['ELIGIBILITY'], combinedGuides, log);
+    
+    // Phase 2: LETTERS
+    const lettersNotes = segments['LETTERS'].text.trim() ? await this.assessModule('LETTERS', eligibilityNotes + '\n' + manifest, segments['LETTERS'], combinedGuides, log) : 'No recommendation letters provided.';
 
-      try {
-        const parsed = JSON.parse(preAnalysisText.substring(preAnalysisText.indexOf('{'), preAnalysisText.lastIndexOf('}') + 1));
-        if (candidateName === 'Applicant' || candidateName === 'Unknown Candidate') finalCandidateName = parsed.name || candidateName;
-        if (!specifiedPathway) finalPathway = parsed.pathway || 'Exceptional Talent';
-        log(`Detected: ${finalCandidateName} (${finalPathway})`);
-      } catch (e) {
-        log('Using default context.');
-      }
-    }
+    // Phase 3: MC
+    const mcNotes = segments['MANDATORY'].text.trim() ? await this.assessModule('MANDATORY', eligibilityNotes + '\n' + lettersNotes + '\n' + manifest, segments['MANDATORY'], combinedGuides, log) : 'No evidence provided for Mandatory Criterion.';
+    
+    // Phase 4: OC1
+    const oc1Notes = segments['OC1'].text.trim() ? await this.assessModule('OC1', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + manifest, segments['OC1'], combinedGuides, log) : '';
+    
+    // Phase 5: OC2
+    const oc2Notes = segments['OC2'].text.trim() ? await this.assessModule('OC2', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + oc1Notes + '\n' + manifest, segments['OC2'], combinedGuides, log) : '';
 
-    const assessment: TechNationAssessment = {
-      candidateName: finalCandidateName,
-      pathway: finalPathway || 'Exceptional Talent',
-      mandatoryCriteria: { id: 'MC', name: 'Mandatory Criteria', description: '', met: false, justification: '', evidenceReference: [] },
-      optionalCriteria: [],
-      furtherDetails: {
-        outstandingTrackRecord: false,
-        strengthOfEvidence: false,
-        meritOfPresenceInUK: false,
-        sufficientLeadershipEvidence: false,
-        evidenceWithinFiveYears: false
-      },
-      overallVerdict: 'INCONCLUSIVE',
-      summary: '',
-      rounds: []
-    };
+    // Phase 6: OC3
+    const oc3Notes = segments['OC3'].text.trim() ? await this.assessModule('OC3', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + oc1Notes + '\n' + oc2Notes + '\n' + manifest, segments['OC3'], combinedGuides, log) : '';
 
-    let currentReviewerNotes = '';
-    let currentAdversaryNotes = '';
-    let consensusReached = false;
-    let roundCount = 0;
-    const maxRounds = 5;
+    // Phase 7: OC4
+    const oc4Notes = segments['OC4'].text.trim() ? await this.assessModule('OC4', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + oc1Notes + '\n' + oc2Notes + '\n' + oc3Notes + '\n' + manifest, segments['OC4'], combinedGuides, log) : '';
 
-    // Initial Review
-    log('Analyzing evidence...it might take some minutes to see further updates...');
-    currentReviewerNotes = await this.cachedChat(this.reviewer, [
-      { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + combinedGuides },
-      { role: 'user', content: `Candidate: ${finalCandidateName}\nPathway: ${finalPathway}\n\nApplication Documents:\n${applicationText}`, attachments }
-    ], 'reviewer_initial_v2');
-    log(`--- INITIAL REVIEW FULL TRANSCRIPT---\n`)
-    log(`${currentReviewerNotes}\n`);
-
-    while (!consensusReached && roundCount < maxRounds) {
-      roundCount++;
-      log(`Round ${roundCount}: Assessment in Progress`);
-
-      // Reviewer Turn
-      log(`Round ${roundCount}: Assessor's Critique...`);
-      currentAdversaryNotes = await this.cachedChat(this.adversary, [
-        { role: 'system', content: ADVERSARY_SYSTEM_PROMPT + '\n\n' + combinedGuides },
-        { role: 'user', content: `Assessor's Assessment:\n${currentReviewerNotes}\n\nCandidate Application:\n${applicationText}\n\nPlease critique the initial assessment using the guides.`, attachments }
-      ], `adversary_r${roundCount}_v2`);
-      log(`--- REVIEWER CRITIQUE (Round ${roundCount}) ---\n`)
-      log(`${currentAdversaryNotes}\n`);
-
-      // Assessor Response
-      log(`Round ${roundCount}: Reviewer's Rebuttal...`);
-      currentReviewerNotes = await this.cachedChat(this.reviewer, [
-        { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + combinedGuides },
-        { role: 'user', content: `Reviewer's Critique:\n${currentAdversaryNotes}\n\nCandidate Application:\n${applicationText}\n\nRespond to the critique and provide your updated assessment.`, attachments }
-      ], `reviewer_r${roundCount}_v2`);
-      log(`--- ASSESSOR UPDATED NOTES (Round ${roundCount}) ---`)
-      log( `${currentReviewerNotes}\n`);
-
-      // Judge Turn
-      log(`Round ${roundCount}: Endorser Evaluation...`);
-      const judgeVerdictJson = await this.cachedChat(this.judge, [
-        { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + combinedGuides },
-        { role: 'user', content: `Assessor's Notes:\n${currentReviewerNotes}\n\nReviewer's Critique:\n${currentAdversaryNotes}\n\nReach a decision according to the guides.` }
-      ], `judge_r${roundCount}_v2`, {
-        responseFormat: {
-          type: 'json_object',
-          schema: {
-            type: 'object',
-            properties: {
-              verdict: { type: 'string', enum: ['ENDORSED', 'NOT ENDORSED'], description: 'The final decision on the application.' },
-              justification: { type: 'string', description: 'Brief explanation for the verdict.' },
-              consensusReached: { type: 'boolean', description: 'Whether the debate between Assessor and Reviewer is fully resolved.' }
-            },
-            required: ['verdict', 'justification', 'consensusReached']
-          }
-        }
-      });
-
-      let parsedVerdict;
-      try {
-          parsedVerdict = JSON.parse(judgeVerdictJson);
-          consensusReached = parsedVerdict.consensusReached || roundCount >= maxRounds;
-      } catch (e) {
-          log('Error parsing judge verdict JSON, falling back to string check.');
-          consensusReached = judgeVerdictJson.includes('CONSENSUS REACHED') || roundCount >= maxRounds;
-      }
-
-      const verdictObj = parsedVerdict || { verdict: 'NOT ENDORSED', justification: judgeVerdictJson };
-      log(`--- ENDORSER VERDICT (Round ${roundCount}) ---`);
-      log(`**Verdict:** ${verdictObj.verdict}`);
-      log(`**Justification:** ${verdictObj.justification}`);
-      log(`**Consensus Reached:** ${consensusReached ? 'YES' : 'NO'}`);
-
-      assessment.rounds.push({
-        roundNumber: roundCount,
-        reviewerNotes: currentReviewerNotes,
-        adversaryNotes: currentAdversaryNotes,
-        consensusReached,
-        currentVerdict: parsedVerdict?.verdict || (judgeVerdictJson.includes('ENDORSED') && !judgeVerdictJson.includes('NOT ENDORSED') ? 'ENDORSED' : 'NOT ENDORSED')
-      });
-    }
-
-    // Final verdict
-    log('Finalizing Decision...');
-    const finalDecisionText = await this.cachedChat(this.judge, [
+    // Final Synthesis
+    log('Finalizing Holistic Decision...');
+    const finalDecisionText = await this.chat(this.judge, [
       { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + combinedGuides },
-      { role: 'user', content: `Assessor's Final Notes:\n${currentReviewerNotes}\n\nReviewer's Final Critique:\n${currentAdversaryNotes}` }
-    ], 'final_decision_v4', {
+      { role: 'user', content: `
+Modular Assessment Notes:
+--- ELIGIBILITY ---
+${eligibilityNotes}
+
+--- RECOMMENDATION LETTERS ---
+${lettersNotes}
+
+--- MANDATORY CRITERION ---
+${mcNotes}
+
+--- OPTIONAL CRITERION 1 ---
+${oc1Notes}
+
+--- OPTIONAL CRITERION 2 ---
+${oc2Notes}
+
+--- OPTIONAL CRITERION 3 ---
+${oc3Notes}
+
+--- OPTIONAL CRITERION 4 ---
+${oc4Notes}
+
+Reach a final verdict based on the synthesis of these modules.
+      ` }
+    ], 'final_decision_modular', {
       responseFormat: {
         type: 'json_object',
         schema: {
           type: 'object',
           properties: {
-            overallVerdict: { type: 'string', enum: ['ENDORSED', 'NOT ENDORSED'] },
+            overallVerdict: { type: 'string', enum: ['ENDORSED', 'NOT ENDORSED', 'INCONCLUSIVE'] },
             pathway: { type: 'string', enum: ['Exceptional Talent', 'Exceptional Promise'] },
             summary: { type: 'string' },
             mandatoryCriteria: {
               type: 'object',
               properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                description: { type: 'string' },
                 met: { type: 'boolean' },
                 justification: { type: 'string' }
               },
-              required: ['met', 'justification']
+              required: ['id', 'name', 'met', 'justification']
             },
             optionalCriteria: {
               type: 'array',
               items: {
                 type: 'object',
                 properties: {
+                  id: { type: 'string' },
                   name: { type: 'string' },
+                  description: { type: 'string' },
                   met: { type: 'boolean' },
                   justification: { type: 'string' }
                 },
-                required: ['name', 'met', 'justification']
+                required: ['id', 'name', 'met', 'justification']
               }
             },
             furtherDetails: {
@@ -292,27 +325,50 @@ ${this.assessorGuide}
       }
     });
 
+    const assessment: TechNationAssessment = {
+      candidateName: candidateName,
+      pathway: specifiedPathway || 'Exceptional Talent',
+      mandatoryCriteria: { id: 'MC', name: 'Mandatory Criteria', description: '', met: false, justification: '', evidenceReference: [] },
+      optionalCriteria: [],
+      furtherDetails: {
+        outstandingTrackRecord: false,
+        strengthOfEvidence: false,
+        meritOfPresenceInUK: false,
+        sufficientLeadershipEvidence: false,
+        evidenceWithinFiveYears: false
+      },
+      overallVerdict: 'INCONCLUSIVE',
+      summary: '',
+      rounds: []
+    };
+
     try {
       const jsonStart = finalDecisionText.indexOf('{');
       const jsonEnd = finalDecisionText.lastIndexOf('}') + 1;
+      if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON object found in response');
+      
       const jsonStr = finalDecisionText.substring(jsonStart, jsonEnd);
       const parsed = JSON.parse(jsonStr);
 
       assessment.overallVerdict = parsed.overallVerdict;
       assessment.pathway = parsed.pathway;
       assessment.summary = parsed.summary;
-      assessment.mandatoryCriteria.met = parsed.mandatoryCriteria.met;
-      assessment.mandatoryCriteria.justification = parsed.mandatoryCriteria.justification;
-      assessment.optionalCriteria = parsed.optionalCriteria.map((oc: any, index: number) => ({
-        id: `OC${index + 1}`,
-        name: oc.name,
-        description: '',
-        met: oc.met,
-        justification: oc.justification,
+      assessment.mandatoryCriteria = {
+        ...assessment.mandatoryCriteria,
+        ...parsed.mandatoryCriteria,
+        evidenceReference: []
+      };
+      assessment.optionalCriteria = (parsed.optionalCriteria || []).map((oc: any) => ({
+        id: oc.id || 'OC',
+        name: oc.name || '',
+        description: oc.description || '',
+        met: !!oc.met,
+        justification: oc.justification || '',
         evidenceReference: []
       }));
-      assessment.furtherDetails = parsed.furtherDetails;
-    } catch (e) {
+      assessment.furtherDetails = parsed.furtherDetails || assessment.furtherDetails;
+    } catch (e: any) {
+      log(`Error parsing final verdict: ${e.message}. Using fallback.`);
       assessment.overallVerdict = finalDecisionText.includes('ENDORSED') && !finalDecisionText.includes('NOT ENDORSED') ? 'ENDORSED' : 'NOT ENDORSED';
       assessment.summary = finalDecisionText;
     }
@@ -320,9 +376,6 @@ ${this.assessorGuide}
     assessment.usage = this.totalUsage;
     assessment.totalCostUSD = this.totalCostUSD;
     
-    Logger.info(`Assessment complete. Total Usage: ${this.totalUsage.inputTokens} input, ${this.totalUsage.outputTokens} output tokens.`);
-    Logger.info(`Total Estimated Cost: $${assessment.totalCostUSD.toFixed(4)}`);
-
     return assessment;
   }
 }

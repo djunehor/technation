@@ -38,13 +38,26 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
   const files = req.files as Express.Multer.File[];
   const candidateName = req.body.candidateName || 'Unknown Candidate';
   const pathway = req.body.pathway as 'Exceptional Talent' | 'Exceptional Promise' | undefined;
-  
+  const assessmentId = uuidv4();
+  const sessionDir = path.join(UPLOAD_ROOT, assessmentId);
+
+  const cleanup = () => {
+    if (fs.existsSync(sessionDir)) {
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+    }
+    // Also cleanup original multer paths if they still exist
+    for (const file of files) {
+      if (fs.existsSync(file.path)) {
+        try { fs.unlinkSync(file.path); } catch (e) {}
+      }
+    }
+  };
+
   if (!files || files.length === 0) {
+    cleanup();
     return res.status(400).json({ error: 'No files uploaded' });
   }
 
-  const assessmentId = uuidv4();
-  const sessionDir = path.join(UPLOAD_ROOT, assessmentId);
   fs.mkdirSync(sessionDir, { recursive: true });
 
   assessmentStore.createAssessment(assessmentId, candidateName);
@@ -59,6 +72,7 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
       assessmentStore.addLog(assessmentId, `Received ${files.length} files. Starting extraction...`);
 
       let fullText = '';
+      const attachments: any[] = [];
 
       for (const file of files) {
         const destPath = path.join(sessionDir, file.originalname);
@@ -85,15 +99,27 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
         }
 
         fullText += `\n--- DOCUMENT: ${file.originalname} ---\n${text}\n`;
+
+        // Only pass PDF and Images as attachments to the LLM (multimodal support)
+        const isSupportedMultimodal = ext.endsWith('.pdf') || ext.match(/\.(png|jpg|jpeg|webp|heic|heif)$/);
+        if (isSupportedMultimodal) {
+          attachments.push({
+            type: 'file',
+            name: file.originalname,
+            mimeType: ext.endsWith('.pdf') ? 'application/pdf' : file.mimetype,
+            path: destPath
+          });
+        }
       }
 
-      assessmentStore.addLog(assessmentId, 'Extraction complete. Starting LLM assessment...');
+      assessmentStore.addLog(assessmentId, 'Extraction complete. Starting assessment...');
 
       const agent = new TechnationAgent();
       await agent.initialize();
 
       const result = await agent.assess(candidateName, fullText, {
         pathway,
+        attachments,
         onUpdate: (msg) => {
           assessmentStore.addLog(assessmentId, msg);
         }
@@ -107,10 +133,7 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
       assessmentStore.updateStatus(assessmentId, 'failed');
       assessmentStore.addLog(assessmentId, `ERROR: ${error.message}`);
     } finally {
-      // Cleanup files
-      if (fs.existsSync(sessionDir)) {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-      }
+      cleanup();
     }
   })();
 });
