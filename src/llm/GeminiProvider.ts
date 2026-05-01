@@ -25,8 +25,12 @@ export interface GeminiProviderOptions {
 
 const MAX_REQUEST_CHARS = 1000000; // 1M chars safety limit
 
+let lastRequestTime = 0;
+const MIN_REQUEST_GAP = 30000; // 30 seconds
+
 export class GeminiProvider implements LLMProvider {
   readonly name = 'gemini';
+  readonly supportsAttachments = true;
   readonly model: string;
   private readonly client: GoogleGenAI;
   constructor(options: GeminiProviderOptions = {}) {
@@ -55,6 +59,16 @@ export class GeminiProvider implements LLMProvider {
     tools: ToolDefinition[],
     options: LLMOptions = {},
   ): Promise<LLMResponse> {
+    // Throttling to avoid rate limits as requested
+    const now = Date.now();
+    const timeSinceLast = now - lastRequestTime;
+    if (timeSinceLast < MIN_REQUEST_GAP) {
+      const waitTime = MIN_REQUEST_GAP - timeSinceLast;
+      Logger.info(`Throttling Gemini request: Waiting ${waitTime}ms...`);
+      await new Promise(resolve => globalThis.setTimeout(resolve, waitTime));
+    }
+    lastRequestTime = Date.now();
+
     const { systemInstruction, history, lastUserMessage } = this.buildContents(messages);
 
     const geminiTools: Tool[] = tools.length > 0
@@ -93,8 +107,16 @@ export class GeminiProvider implements LLMProvider {
 
     try {
       const response = await withRetry(
-        () => (chat as any).sendMessage({ message: finalUserMessage as any }),
-        { maxAttempts: 5, delay: 2000 }
+        async () => {
+          const timeoutPromise = new Promise((_, reject) =>
+            globalThis.setTimeout(() => reject(new Error('Request Timeout: Gemini did not respond within 90s')), 90000)
+          );
+          return Promise.race([
+            (chat as any).sendMessage({ message: finalUserMessage as any }),
+            timeoutPromise
+          ]);
+        },
+        { maxAttempts: 10, delay: 2000 }
       ) as any;
 
       // Extract text content
@@ -167,7 +189,7 @@ export class GeminiProvider implements LLMProvider {
     
     const result = await model.generateContentStream({
       systemInstruction: systemInstruction ? { role: 'system', parts: [{ text: systemInstruction }] } : undefined,
-      contents: [...history, { role: 'user', parts: [{ text: lastUserMessage }] }],
+      contents: [...history, { role: 'user', parts: Array.isArray(lastUserMessage) ? (lastUserMessage as any) : [{ text: lastUserMessage }] }],
       config: {
         temperature: options.temperature ?? 0.1,
         maxOutputTokens: options.maxTokens ?? 8192,
@@ -323,6 +345,15 @@ function jsonSchemaPropToGeminiSchema(prop: JSONSchemaProperty): Schema {
   if (prop.enum) schema.enum = prop.enum;
   if (prop.type === 'array' && prop.items) {
     schema.items = jsonSchemaPropToGeminiSchema(prop.items);
+  }
+  if (prop.type === 'object' && prop.properties) {
+    schema.properties = {};
+    for (const [key, value] of Object.entries(prop.properties)) {
+      schema.properties[key] = jsonSchemaPropToGeminiSchema(value);
+    }
+    if (prop.required && prop.required.length > 0) {
+      schema.required = prop.required;
+    }
   }
 
   return schema;

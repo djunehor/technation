@@ -8,6 +8,8 @@ import type {
 import { Logger } from '../utils/logger.js';
 
 export class ClaudeProvider implements LLMProvider {
+  readonly name = 'anthropic';
+  readonly supportsAttachments = false;
   private client: Anthropic;
 
   constructor(apiKey: string, private model: string = 'claude-3-opus-20240229') {

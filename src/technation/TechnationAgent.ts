@@ -128,7 +128,7 @@ Output JSON only:
 
     try {
       const mapping = JSON.parse(response.substring(response.indexOf('{'), response.lastIndexOf('}') + 1));
-      log(`[SORTING COMPLETED] Evidence Map: ${JSON.stringify(mapping, null, 2)}`);
+      log(`[SORTING COMPLETED] Successfully mapped documents.`);
       const documents = applicationText.split('\n--- DOCUMENT: ');
       
       for (const docChunk of documents) {
@@ -141,9 +141,19 @@ Output JSON only:
           const upperCategory = category.toUpperCase();
           if (result[upperCategory] && Array.isArray(names)) {
             if (names.some((n: any) => n && (n.includes(docName) || docName.includes(n)))) {
-              result[upperCategory].text += `\n--- DOCUMENT: ${docName} ---\n${docContent}\n`;
               const att = attachments?.find(a => a.name?.includes(docName) || docName.includes(a.name || ''));
-              if (att) result[upperCategory].attachments.push(att);
+              
+              if (att) {
+                result[upperCategory].attachments.push(att);
+                // If provider supports attachments, don't bloat context with extracted text
+                if (this.reviewer.supportsAttachments) {
+                  result[upperCategory].text += `\n--- DOCUMENT: ${docName} --- (Visual content sent as attachment)\n`;
+                } else {
+                  result[upperCategory].text += `\n--- DOCUMENT: ${docName} ---\n${docContent}\n`;
+                }
+              } else {
+                result[upperCategory].text += `\n--- DOCUMENT: ${docName} ---\n${docContent}\n`;
+              }
             }
           }
         }
@@ -162,7 +172,7 @@ Output JSON only:
     moduleContent: { text: string, attachments: LLMAttachment[] }, 
     guides: string,
     log: (msg: string) => void
-  ): Promise<string> {
+  ): Promise<{ decision: 'ENDORSED' | 'NOT ENDORSED', justification: string, notes: string }> {
     log(`--- Assessing ${moduleName} ---`);
     let notes = await this.chat(this.reviewer, [
       { role: 'system', content: REVIEWER_SYSTEM_PROMPT + '\n\n' + MODULAR_MODE_INSTRUCTIONS + '\n\n' + guides },
@@ -173,7 +183,7 @@ Output JSON only:
     // Debate loop for module
     let adversaryNotes = await this.chat(this.adversary, [
       { role: 'system', content: ADVERSARY_SYSTEM_PROMPT + '\n\n' + MODULAR_MODE_INSTRUCTIONS + '\n\n' + guides },
-      { role: 'user', content: `Module: ${moduleName}\nAssessor's Notes:\n${notes}\n\nEvidence:\n${moduleContent.text}`, attachments: moduleContent.attachments }
+      { role: 'user', content: `Module: ${moduleName}\nContext:\n${context}\n\nAssessor's Notes:\n${notes}\n\nEvidence:\n${moduleContent.text}`, attachments: moduleContent.attachments }
     ], `${moduleName}_critique`);
     log(`[${moduleName} REVIEWER AUDIT]:\n${adversaryNotes}\n`);
 
@@ -182,14 +192,41 @@ Output JSON only:
       { role: 'user', content: `Reviewer's Critique:\n${adversaryNotes}\n\nEvidence:\n${moduleContent.text}\n\nFinalize your notes for ${moduleName}.`, attachments: moduleContent.attachments }
     ], `${moduleName}_final`);
 
-    const interimVerdict = await this.chat(this.judge, [
+    const interimVerdictJson = await this.chat(this.judge, [
       { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + MODULAR_MODE_INSTRUCTIONS + '\n\n' + guides },
       { role: 'user', content: `Module: ${moduleName}\nAssessor's Notes:\n${notes}\n\nReviewer's Critique:\n${adversaryNotes}\n\nProvide an interim verdict for this specific module.` }
-    ], `${moduleName}_verdict`);
+    ], `${moduleName}_verdict`, {
+      responseFormat: {
+        type: 'json_object',
+        schema: {
+          type: 'object',
+          properties: {
+            decision: { type: 'string', enum: ['ENDORSED', 'NOT ENDORSED'] },
+            justification: { type: 'string' }
+          },
+          required: ['decision', 'justification']
+        }
+      }
+    });
 
-    log(`[${moduleName} FINAL VERDICT]: ${interimVerdict}`);
+    let parsedVerdict: { decision: 'ENDORSED' | 'NOT ENDORSED', justification: string } = { 
+      decision: 'NOT ENDORSED', 
+      justification: 'Failed to parse interim verdict.' 
+    };
+    try {
+      parsedVerdict = JSON.parse(interimVerdictJson);
+    } catch (e) {
+      log(`[ERROR] Failed to parse interim verdict for ${moduleName}: ${interimVerdictJson}`);
+      if (interimVerdictJson.includes('ENDORSED')) parsedVerdict.decision = 'ENDORSED';
+    }
 
-    return `### VERDICT: ${interimVerdict}\n\n### DETAILED NOTES:\n${notes}`;
+    log(`[${moduleName} FINAL VERDICT]: ${parsedVerdict.decision}\nJustification: ${parsedVerdict.justification}`);
+
+    return { 
+      decision: parsedVerdict.decision, 
+      justification: parsedVerdict.justification,
+      notes: notes
+    };
   }
 
   async assess(
@@ -215,115 +252,9 @@ ${this.applicationGuide}
 ### DOCUMENT 2: INTERNAL ASSESSOR GUIDE
 ${this.assessorGuide}
     `;
-
     log(`Starting Modular Tech Nation assessment for ${candidateName}`);
     this.totalUsage = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
     this.totalCostUSD = 0;
-
-    const segments = await this.sortEvidence(applicationText, log, attachments);
-    
-    const manifest = `FULL DOCUMENT MANIFEST (Received and Sorted):\n${Object.entries(segments).filter(([_, s]) => s.text.trim()).map(([cat, s]) => `- ${cat}: ${s.text.split('--- DOCUMENT: ').length - 1} documents`).join('\n')}`;
-
-    // Phase 1: Eligibility
-    const eligibilityNotes = await this.assessModule('ELIGIBILITY', `Candidate: ${candidateName}\nTarget Pathway: ${specifiedPathway || 'Unknown'}\n\n${manifest}`, segments['ELIGIBILITY'], combinedGuides, log);
-    
-    // Phase 2: LETTERS
-    const lettersNotes = segments['LETTERS'].text.trim() ? await this.assessModule('LETTERS', eligibilityNotes + '\n' + manifest, segments['LETTERS'], combinedGuides, log) : 'No recommendation letters provided.';
-
-    // Phase 3: MC
-    const mcNotes = segments['MANDATORY'].text.trim() ? await this.assessModule('MANDATORY', eligibilityNotes + '\n' + lettersNotes + '\n' + manifest, segments['MANDATORY'], combinedGuides, log) : 'No evidence provided for Mandatory Criterion.';
-    
-    // Phase 4: OC1
-    const oc1Notes = segments['OC1'].text.trim() ? await this.assessModule('OC1', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + manifest, segments['OC1'], combinedGuides, log) : '';
-    
-    // Phase 5: OC2
-    const oc2Notes = segments['OC2'].text.trim() ? await this.assessModule('OC2', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + oc1Notes + '\n' + manifest, segments['OC2'], combinedGuides, log) : '';
-
-    // Phase 6: OC3
-    const oc3Notes = segments['OC3'].text.trim() ? await this.assessModule('OC3', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + oc1Notes + '\n' + oc2Notes + '\n' + manifest, segments['OC3'], combinedGuides, log) : '';
-
-    // Phase 7: OC4
-    const oc4Notes = segments['OC4'].text.trim() ? await this.assessModule('OC4', eligibilityNotes + '\n' + lettersNotes + '\n' + mcNotes + '\n' + oc1Notes + '\n' + oc2Notes + '\n' + oc3Notes + '\n' + manifest, segments['OC4'], combinedGuides, log) : '';
-
-    // Final Synthesis
-    log('Finalizing Holistic Decision...');
-    const finalDecisionText = await this.chat(this.judge, [
-      { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + combinedGuides },
-      { role: 'user', content: `
-Modular Assessment Notes:
---- ELIGIBILITY ---
-${eligibilityNotes}
-
---- RECOMMENDATION LETTERS ---
-${lettersNotes}
-
---- MANDATORY CRITERION ---
-${mcNotes}
-
---- OPTIONAL CRITERION 1 ---
-${oc1Notes}
-
---- OPTIONAL CRITERION 2 ---
-${oc2Notes}
-
---- OPTIONAL CRITERION 3 ---
-${oc3Notes}
-
---- OPTIONAL CRITERION 4 ---
-${oc4Notes}
-
-Reach a final verdict based on the synthesis of these modules.
-      ` }
-    ], 'final_decision_modular', {
-      responseFormat: {
-        type: 'json_object',
-        schema: {
-          type: 'object',
-          properties: {
-            overallVerdict: { type: 'string', enum: ['ENDORSED', 'NOT ENDORSED', 'INCONCLUSIVE'] },
-            pathway: { type: 'string', enum: ['Exceptional Talent', 'Exceptional Promise'] },
-            summary: { type: 'string' },
-            mandatoryCriteria: {
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                name: { type: 'string' },
-                description: { type: 'string' },
-                met: { type: 'boolean' },
-                justification: { type: 'string' }
-              },
-              required: ['id', 'name', 'met', 'justification']
-            },
-            optionalCriteria: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string' },
-                  name: { type: 'string' },
-                  description: { type: 'string' },
-                  met: { type: 'boolean' },
-                  justification: { type: 'string' }
-                },
-                required: ['id', 'name', 'met', 'justification']
-              }
-            },
-            furtherDetails: {
-              type: 'object',
-              properties: {
-                outstandingTrackRecord: { type: 'boolean' },
-                strengthOfEvidence: { type: 'boolean' },
-                meritOfPresenceInUK: { type: 'boolean' },
-                sufficientLeadershipEvidence: { type: 'boolean' },
-                evidenceWithinFiveYears: { type: 'boolean' }
-              },
-              required: ['outstandingTrackRecord', 'strengthOfEvidence', 'meritOfPresenceInUK', 'sufficientLeadershipEvidence', 'evidenceWithinFiveYears']
-            }
-          },
-          required: ['overallVerdict', 'pathway', 'summary', 'mandatoryCriteria', 'optionalCriteria', 'furtherDetails']
-        }
-      }
-    });
 
     const assessment: TechNationAssessment = {
       candidateName: candidateName,
@@ -342,35 +273,121 @@ Reach a final verdict based on the synthesis of these modules.
       rounds: []
     };
 
+    const segments = await this.sortEvidence(applicationText, log, attachments);
+    
+    const manifest = `FULL DOCUMENT MANIFEST (Received and Sorted):\n${Object.entries(segments).filter(([_, s]) => s.text.trim()).map(([cat, s]) => `- ${cat}: ${s.text.split('--- DOCUMENT: ').length - 1} documents`).join('\n')}`;
+
+    // Helper to update assessment from module result
+    const updateAssessment = (moduleName: string, result: { decision: 'ENDORSED' | 'NOT ENDORSED', justification: string, notes: string }) => {
+      const isMet = result.decision === 'ENDORSED';
+      
+      if (moduleName === 'MANDATORY') {
+        assessment.mandatoryCriteria.met = isMet;
+        assessment.mandatoryCriteria.justification = result.notes;
+      } else if (moduleName.startsWith('OC')) {
+        assessment.optionalCriteria.push({
+          id: moduleName,
+          name: moduleName,
+          description: '',
+          met: isMet,
+          justification: result.notes,
+          evidenceReference: []
+        });
+      } else if (moduleName === 'ELIGIBILITY') {
+        assessment.pathway = result.notes.includes('Exceptional Talent') ? 'Exceptional Talent' : 'Exceptional Promise';
+      }
+    };
+
+    // Phase 1: Eligibility
+    const eligibilityResult = await this.assessModule('ELIGIBILITY', `Candidate: ${candidateName}\nTarget Pathway: ${specifiedPathway || 'Unknown'}\n\n${manifest}`, segments['ELIGIBILITY'], combinedGuides, log);
+    updateAssessment('ELIGIBILITY', eligibilityResult);
+    
+    // Phase 2: LETTERS
+    const lettersResult = segments['LETTERS'].text.trim() 
+      ? await this.assessModule('LETTERS', eligibilityResult.notes + '\n' + manifest, segments['LETTERS'], combinedGuides, log) 
+      : { decision: 'NOT ENDORSED' as const, justification: 'No recommendation letters provided.', notes: 'No recommendation letters provided.' };
+    updateAssessment('LETTERS', lettersResult);
+
+    // Phase 3: MC
+    const mcResult = segments['MANDATORY'].text.trim() 
+      ? await this.assessModule('MANDATORY', eligibilityResult.notes + '\n' + lettersResult.notes + '\n' + manifest, segments['MANDATORY'], combinedGuides, log) 
+      : { decision: 'NOT ENDORSED' as const, justification: 'No evidence provided for Mandatory Criterion.', notes: 'No evidence provided for Mandatory Criterion.' };
+    updateAssessment('MANDATORY', mcResult);
+    
+    // Phase 4: OC1
+    const oc1Result = segments['OC1'].text.trim() ? await this.assessModule('OC1', eligibilityResult.notes + '\n' + lettersResult.notes + '\n' + mcResult.notes + '\n' + manifest, segments['OC1'], combinedGuides, log) : null;
+    if (oc1Result) updateAssessment('OC1', oc1Result);
+    
+    // Phase 5: OC2
+    const oc2Result = segments['OC2'].text.trim() ? await this.assessModule('OC2', eligibilityResult.notes + '\n' + lettersResult.notes + '\n' + mcResult.notes + '\n' + (oc1Result?.notes || '') + '\n' + manifest, segments['OC2'], combinedGuides, log) : null;
+    if (oc2Result) updateAssessment('OC2', oc2Result);
+
+    // Phase 6: OC3
+    const oc3Result = segments['OC3'].text.trim() ? await this.assessModule('OC3', eligibilityResult.notes + '\n' + lettersResult.notes + '\n' + mcResult.notes + '\n' + (oc1Result?.notes || '') + '\n' + (oc2Result?.notes || '') + '\n' + manifest, segments['OC3'], combinedGuides, log) : null;
+    if (oc3Result) updateAssessment('OC3', oc3Result);
+
+    // Phase 7: OC4
+    const oc4Result = segments['OC4'].text.trim() ? await this.assessModule('OC4', eligibilityResult.notes + '\n' + lettersResult.notes + '\n' + mcResult.notes + '\n' + (oc1Result?.notes || '') + '\n' + (oc2Result?.notes || '') + '\n' + (oc3Result?.notes || '') + '\n' + manifest, segments['OC4'], combinedGuides, log) : null;
+    if (oc4Result) updateAssessment('OC4', oc4Result);
+
+    // Final Synthesis
+    log('Finalizing Holistic Decision...');
+    const historyText = `ELIGIBILITY: ${eligibilityResult.notes}\nLETTERS: ${lettersResult.notes}\nMC: ${mcResult.notes}\nOC1: ${oc1Result?.notes || ''}\nOC2: ${oc2Result?.notes || ''}\nOC3: ${oc3Result?.notes || ''}\nOC4: ${oc4Result?.notes || ''}`;
+    
+    const finalDecisionText = await this.chat(this.judge, [
+      { role: 'system', content: JUDGE_SYSTEM_PROMPT + '\n\n' + combinedGuides },
+      { role: 'user', content: `Candidate: ${candidateName}\n\nReview the following assessment history and provide a final holistic decision.\n\n${historyText}` }
+    ], 'final_decision_modular', {
+      responseFormat: {
+        type: 'json_object',
+        schema: {
+          type: 'object',
+          properties: {
+            overallVerdict: { type: 'string', enum: ['ENDORSED', 'NOT ENDORSED'] },
+            summary: { type: 'string' },
+            furtherDetails: {
+              type: 'object',
+              properties: {
+                outstandingTrackRecord: { type: 'boolean' },
+                strengthOfEvidence: { type: 'boolean' },
+                meritOfPresenceInUK: { type: 'boolean' },
+                sufficientLeadershipEvidence: { type: 'boolean' },
+                evidenceWithinFiveYears: { type: 'boolean' }
+              }
+            }
+          },
+          required: ['overallVerdict', 'summary', 'furtherDetails']
+        }
+      }
+    });
+
     try {
       const jsonStart = finalDecisionText.indexOf('{');
       const jsonEnd = finalDecisionText.lastIndexOf('}') + 1;
-      if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON object found in response');
-      
-      const jsonStr = finalDecisionText.substring(jsonStart, jsonEnd);
-      const parsed = JSON.parse(jsonStr);
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        const jsonStr = finalDecisionText.substring(jsonStart, jsonEnd);
+        const parsed = JSON.parse(jsonStr);
 
-      assessment.overallVerdict = parsed.overallVerdict;
-      assessment.pathway = parsed.pathway;
-      assessment.summary = parsed.summary;
-      assessment.mandatoryCriteria = {
-        ...assessment.mandatoryCriteria,
-        ...parsed.mandatoryCriteria,
-        evidenceReference: []
-      };
-      assessment.optionalCriteria = (parsed.optionalCriteria || []).map((oc: any) => ({
-        id: oc.id || 'OC',
-        name: oc.name || '',
-        description: oc.description || '',
-        met: !!oc.met,
-        justification: oc.justification || '',
-        evidenceReference: []
-      }));
-      assessment.furtherDetails = parsed.furtherDetails || assessment.furtherDetails;
+        assessment.overallVerdict = parsed.overallVerdict || (finalDecisionText.includes('ENDORSED') && !finalDecisionText.includes('NOT ENDORSED') ? 'ENDORSED' : 'NOT ENDORSED');
+        assessment.summary = parsed.summary || finalDecisionText;
+        assessment.furtherDetails = parsed.furtherDetails || assessment.furtherDetails;
+        
+        log(`[FINAL DECISION]: ${assessment.overallVerdict}`);
+        log(`[FINAL SUMMARY]: ${assessment.summary}`);
+      } else {
+        throw new Error('No JSON object found');
+      }
     } catch (e: any) {
-      log(`Error parsing final verdict: ${e.message}. Using fallback.`);
+      log(`Error parsing final verdict JSON: ${e.message}. Using robust fallback.`);
       assessment.overallVerdict = finalDecisionText.includes('ENDORSED') && !finalDecisionText.includes('NOT ENDORSED') ? 'ENDORSED' : 'NOT ENDORSED';
-      assessment.summary = finalDecisionText;
+      assessment.summary = finalDecisionText || "Holistic assessment complete based on modular results.";
+      log(`[FINAL DECISION (FALLBACK)]: ${assessment.overallVerdict}`);
+    }
+
+    // Final safety check: if MC or Letters failed, the overall verdict MUST be NOT ENDORSED
+    if (!assessment.mandatoryCriteria.met || (lettersResult && lettersResult.decision === 'NOT ENDORSED')) {
+      assessment.overallVerdict = 'NOT ENDORSED';
+      log(`[OVERRIDE]: Setting overall verdict to NOT ENDORSED because Mandatory Criteria or Letters were not satisfied.`);
     }
 
     assessment.usage = this.totalUsage;

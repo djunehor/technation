@@ -57,6 +57,9 @@ export interface LLMOptions {
 }
 
 export interface LLMProvider {
+  readonly name: string;
+  readonly supportsAttachments?: boolean;
+
   chat(
     messages: LLMMessage[],
     tools: ToolDefinition[],

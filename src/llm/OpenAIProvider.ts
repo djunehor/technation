@@ -10,6 +10,8 @@ import { withRetry } from '../utils/retry.js';
 import { Logger } from '../utils/logger.js';
 
 export class OpenAIProvider implements LLMProvider {
+  readonly name = 'openai';
+  readonly supportsAttachments = false;
   private client: OpenAI;
 
   constructor(apiKey: string, private model: string = 'gpt-4o') {
