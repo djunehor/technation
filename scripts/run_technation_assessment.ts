@@ -1,6 +1,8 @@
 import { TechnationAgent } from '../src/technation/TechnationAgent.js';
 import { convertPdfToText } from '../src/converters/PdfConverter.js';
 import { convertDocxToText } from '../src/converters/DocxConverter.js';
+import { splitPdf, PageMapping } from '../src/converters/PdfSplitter.js';
+import { getLLMProvider } from '../src/llm/ProviderFactory.js';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
@@ -81,14 +83,71 @@ async function main() {
     let result;
     if (applicationPath.endsWith('.pdf')) {
       result = await convertPdfToText(applicationPath);
-      attachments.push({ type: 'file', mimeType: 'application/pdf', path: applicationPath });
+      
+      if (result.pageCount && result.pageCount > 3) {
+        console.log('Single PDF detected. Using AI to map page ranges for modular splitting...');
+        const provider = getLLMProvider();
+        const mappingPrompt = `
+You are analyzing a single merged Tech Nation application document.
+The document text is separated by "--- Page X ---" markers.
+Identify the start and end page numbers for the following sections:
+- ELIGIBILITY (CV, Personal Statement, Career history)
+- LETTERS (Recommendation Letters)
+- MANDATORY (Evidence for Mandatory Criterion)
+- OC1, OC2, OC3, OC4 (Evidence for Optional Criteria)
+
+Output ONLY a JSON object mapping the section names to an array of [startPage, endPage].
+If a section is missing, do not include it. Example:
+{
+  "ELIGIBILITY": [1, 5],
+  "LETTERS": [6, 9],
+  "MANDATORY": [10, 15],
+  "OC2": [16, 20]
+}
+
+Document Text:
+${result.text}
+`;
+        const llmRes = await provider.chat([{ role: 'user', content: mappingPrompt }], []);
+        
+        try {
+            const jsonStart = llmRes.content?.indexOf('{') ?? -1;
+            const jsonEnd = llmRes.content?.lastIndexOf('}') ?? -1;
+            const mappingJson = jsonStart !== -1 ? llmRes.content?.substring(jsonStart, jsonEnd + 1) : '{}';
+            const mapping: PageMapping = JSON.parse(mappingJson || '{}');
+            console.log('Obtained page mapping:', mapping);
+            
+            const splitDir = path.resolve(process.cwd(), `scratch/split_${candidateName}_${Date.now()}`);
+            const splitFiles = await splitPdf(applicationPath, mapping, splitDir);
+            
+            if (splitFiles.length > 0) {
+                console.log(`Successfully split into ${splitFiles.length} files. Processing as directory...`);
+                for (const splitFile of splitFiles) {
+                    const splitResult = await convertPdfToText(splitFile);
+                    attachments.push({ type: 'file', mimeType: 'application/pdf', path: splitFile });
+                    applicationText += `\n--- DOCUMENT: ${path.basename(splitFile)} ---\n${splitResult.text}\n\n`;
+                }
+            } else {
+                console.warn('Failed to split PDF. Proceeding with single file.');
+                applicationText = `\n--- DOCUMENT: ${path.basename(applicationPath)} ---\n${result.text}`;
+                attachments.push({ type: 'file', mimeType: 'application/pdf', path: applicationPath });
+            }
+        } catch (err: any) {
+             console.error('Failed to parse mapping JSON:', err.message);
+             applicationText = `\n--- DOCUMENT: ${path.basename(applicationPath)} ---\n${result.text}`;
+             attachments.push({ type: 'file', mimeType: 'application/pdf', path: applicationPath });
+        }
+      } else {
+         applicationText = `\n--- DOCUMENT: ${path.basename(applicationPath)} ---\n${result.text}`;
+         attachments.push({ type: 'file', mimeType: 'application/pdf', path: applicationPath });
+      }
     } else if (applicationPath.endsWith('.docx')) {
       result = await convertDocxToText(applicationPath);
+      applicationText = `\n--- DOCUMENT: ${path.basename(applicationPath)} ---\n${result.text}`;
     } else {
       console.error(`❌ Unsupported file format: ${path.extname(applicationPath)}`);
       process.exit(1);
     }
-    applicationText = result.text;
   }
 
   assessmentStore.addLog(assessmentId, `Starting assessment for ${candidateName}...`);

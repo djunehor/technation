@@ -9,7 +9,7 @@ export function getLLMProvider(): LLMProvider & { name: string; model: string } 
   const model = process.env.LLM_MODEL || (providerType === 'gemini' ? 'gemini-2.5-pro' : (providerType === 'openai' ? 'gpt-4o' : 'claude-3-opus-20240229'));
   const apiKey = process.env[providerType === 'gemini' ? 'GEMINI_API_KEY' : (providerType === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY')];
 
-  if (!apiKey) {
+  if (!apiKey && !process.env.VERTEX_PROJECT_ID) {
     Logger.error(`No API key found for ${providerType}. Please set ${providerType.toUpperCase()}_API_KEY.`);
   }
 

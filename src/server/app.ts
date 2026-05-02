@@ -9,6 +9,8 @@ import { TechnationAgent } from '../technation/TechnationAgent.js';
 import { assessmentStore } from './assessmentStore.js';
 import { convertPdfToText } from '../converters/PdfConverter.js';
 import { convertDocxToText } from '../converters/DocxConverter.js';
+import { splitPdf, PageMapping } from '../converters/PdfSplitter.js';
+import { getLLMProvider } from '../llm/ProviderFactory.js';
 import { Logger } from '../utils/logger.js';
 
 dotenv.config();
@@ -85,9 +87,72 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
         
         let text = '';
         const ext = file.originalname.toLowerCase();
+        
         if (ext.endsWith('.pdf')) {
           const result = await convertPdfToText(destPath);
-          text = result.text;
+          
+          if (result.pageCount && result.pageCount > 3) {
+            assessmentStore.addLog(assessmentId, 'Single PDF detected. Using AI to map page ranges for modular splitting...');
+            const provider = getLLMProvider();
+            const mappingPrompt = `
+You are analyzing a single merged Tech Nation application document.
+The document text is separated by "--- Page X ---" markers.
+Identify the start and end page numbers for the following sections:
+- ELIGIBILITY (CV, Personal Statement, Career history)
+- LETTERS (Recommendation Letters)
+- MANDATORY (Evidence for Mandatory Criterion)
+- OC1, OC2, OC3, OC4 (Evidence for Optional Criteria)
+
+Output ONLY a JSON object mapping the section names to an array of [startPage, endPage].
+If a section is missing, do not include it. Example:
+{
+  "ELIGIBILITY": [1, 5],
+  "LETTERS": [6, 9],
+  "MANDATORY": [10, 15],
+  "OC2": [16, 20]
+}
+
+Document Text:
+${result.text}
+`;
+            try {
+              const llmRes = await provider.chat([{ role: 'user', content: mappingPrompt }], []);
+              
+              const jsonStart = llmRes.content?.indexOf('{') ?? -1;
+              const jsonEnd = llmRes.content?.lastIndexOf('}') ?? -1;
+              const mappingJson = jsonStart !== -1 ? llmRes.content?.substring(jsonStart, jsonEnd + 1) : '{}';
+              const mapping: PageMapping = JSON.parse(mappingJson || '{}');
+              
+              assessmentStore.addLog(assessmentId, `Obtained page mapping: ${JSON.stringify(mapping)}`);
+              
+              const splitDir = path.join(sessionDir, `split_${Date.now()}`);
+              const splitFiles = await splitPdf(destPath, mapping, splitDir);
+              
+              if (splitFiles.length > 0) {
+                assessmentStore.addLog(assessmentId, `Successfully split into ${splitFiles.length} files. Processing as individual documents...`);
+                for (const splitFile of splitFiles) {
+                  const splitResult = await convertPdfToText(splitFile);
+                  const splitFileName = path.basename(splitFile);
+                  fullText += `\n--- DOCUMENT: ${splitFileName} ---\n${splitResult.text}\n`;
+                  attachments.push({
+                    type: 'file',
+                    name: splitFileName,
+                    mimeType: 'application/pdf',
+                    path: splitFile
+                  });
+                }
+                continue; // Skip the default attachment handling below since we handled the split files
+              } else {
+                assessmentStore.addLog(assessmentId, '⚠️ Failed to split PDF (0 files returned). Proceeding with single file.');
+                text = result.text;
+              }
+            } catch (err: any) {
+              assessmentStore.addLog(assessmentId, `⚠️ Failed to parse mapping JSON or split PDF: ${err.message}. Proceeding with single file.`);
+              text = result.text;
+            }
+          } else {
+            text = result.text;
+          }
         } else if (ext.endsWith('.docx')) {
           const result = await convertDocxToText(destPath);
           text = result.text;

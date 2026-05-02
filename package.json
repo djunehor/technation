@@ -30,6 +30,7 @@
     "mammoth": "^1.7.2",
     "multer": "^2.1.1",
     "openai": "^6.34.0",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.6.205",
     "tesseract.js": "^7.0.0",
     "tsx": "^4.7.1",
