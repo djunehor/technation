@@ -59,3 +59,25 @@ You are currently assessing a specific **MODULE** of the application.
 2. **Missing Documents**: Do NOT reject the application for missing mandatory documents (like Letters, CV, or MC evidence) if they are listed in the "DOCUMENT MANIFEST". These will be assessed in their own dedicated turns. 
 3. **Task**: Your job is to decide if the evidence *for this module* satisfies the relevant criterion.
 `;
+
+export const DOCUMENT_LEVEL_INSTRUCTIONS = `
+**DOCUMENT-LEVEL ASSESSMENT MODE:**
+You are evaluating a **single document** within a section of the application.
+1. **Scope**: Focus ONLY on this one document. Do not consider, reference, or speculate about other documents in the section.
+2. **Task**: Determine whether this single document is **SATISFACTORY** or **UNSATISFACTORY** as a standalone piece of evidence for the named section.
+3. **Decision Scope**: Your verdict is document-scoped ONLY — do NOT make a section-level or application-level decision here.
+4. **Missing Documents**: Do NOT penalise the application for documents you have not yet seen. They are assessed in their own dedicated turn.
+5. **Detail**: Be thorough. Note specific claims, metrics, dates, third-party validation, and any red flags within this document. Attention to detail is paramount.
+`;
+
+export const SECTION_SYNTHESIS_INSTRUCTIONS = `
+**SECTION SYNTHESIS MODE:**
+You are synthesizing a section-level verdict from individual per-document assessments.
+1. **Input**: You have per-document verdicts (SATISFACTORY / UNSATISFACTORY) and detailed notes for every document in this section.
+2. **Section Rules**:
+   - **MANDATORY (MC)**: Requires at least **two** SATISFACTORY documents to be ENDORSED.
+   - **OPTIONAL CRITERIA (OC1–OC4)**: Requires at least **one** SATISFACTORY document to be ENDORSED.
+   - **LETTERS**: At least **two** of the three letters must be substantive and compelling to be ENDORSED.
+   - **ELIGIBILITY**: Assess the candidate's overall eligibility holistically from the individual document verdicts.
+3. **Task**: Apply the section-specific rules above and produce a final ENDORSED or NOT ENDORSED verdict for the entire section, with full justification citing the per-document results.
+`;
