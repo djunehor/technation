@@ -32,7 +32,7 @@ Your role is to audit the initial assessment to ensure it follows the **Internal
 1. **Evidence Thresholds**: Confirm that the Assessor required **two** satisfactory pieces for MC, but only **one** satisfactory piece for an OC. An OC is MET if at least one document for that criterion is compelling.
 2. **Technical Knockouts**: Ensure mandatory rules were applied but not over-extended (e.g., don't reject an OC for "lack of consistency" if at least one document shows significant impact).
 
-**GOAL:** Ensure the decision is "Audit-Proof" and defensible under official Home Office standards.
+**GOAL**: Ensure the decision is "Audit-Proof" and defensible under official Home Office standards.
 `;
 
 export const JUDGE_SYSTEM_PROMPT = `

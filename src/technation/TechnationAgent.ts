@@ -96,6 +96,8 @@ Analyze the following document names and group them into these categories for UK
 3. MANDATORY: Evidence for Mandatory Criterion (MC).
 4. OC1, OC2, OC3, OC4: Evidence for the Optional Criteria.
 
+Also, determine if the applicant is applying for "Exceptional Talent" or "Exceptional Promise" based on the document names.
+
 DOCUMENT LIST:
 ${docNames.join('\n')}
 
@@ -107,16 +109,17 @@ Output JSON only:
   "OC1": [...],
   "OC2": [...],
   "OC3": [...],
-  "OC4": [...]
+  "OC4": [...],
+  "pathway": "Exceptional Talent" | "Exceptional Promise"
 }
     `;
 
     const response = await this.chat(this.reviewer, [
       { role: 'system', content: sortingPrompt },
-      { role: 'user', content: 'Map the provided document list into the JSON structure.' }
+      { role: 'user', content: 'Map the provided document list into the JSON structure and determine the pathway.' }
     ], 'sorting');
 
-    const result: Record<string, { text: string, attachments: LLMAttachment[] }> = {
+    const result: Record<string, { text: string, attachments: LLMAttachment[], pathway?: string }> = {
       'ELIGIBILITY': { text: '', attachments: [] },
       'LETTERS': { text: '', attachments: [] },
       'MANDATORY': { text: '', attachments: [] },
@@ -129,6 +132,11 @@ Output JSON only:
     try {
       const mapping = JSON.parse(response.substring(response.indexOf('{'), response.lastIndexOf('}') + 1));
       log(`[SORTING COMPLETED] Successfully mapped documents.`);
+      
+      if (mapping.pathway) {
+        result.pathway = mapping.pathway;
+      }
+
       const documents = applicationText.split('\n--- DOCUMENT: ');
       
       for (const docChunk of documents) {
@@ -275,7 +283,12 @@ ${this.assessorGuide}
 
     const segments = await this.sortEvidence(applicationText, log, attachments);
     
-    const manifest = `FULL DOCUMENT MANIFEST (Received and Sorted):\n${Object.entries(segments).filter(([_, s]) => s.text.trim()).map(([cat, s]) => `- ${cat}: ${s.text.split('--- DOCUMENT: ').length - 1} documents`).join('\n')}`;
+    if (!specifiedPathway && (segments as any).pathway) {
+      assessment.pathway = (segments as any).pathway;
+      log(`[PATHWAY DETECTED] LLM detected pathway from documents: ${assessment.pathway}`);
+    }
+
+    const manifest = `FULL DOCUMENT MANIFEST (Received and Sorted):\n${Object.entries(segments).filter(([key, s]) => key !== 'pathway' && (s as any).text?.trim()).map(([cat, s]) => `- ${cat}: ${(s as any).text.split('--- DOCUMENT: ').length - 1} documents`).join('\n')}`;
 
     // Helper to update assessment from module result
     const updateAssessment = (moduleName: string, result: { decision: 'ENDORSED' | 'NOT ENDORSED', justification: string, notes: string }) => {
@@ -294,7 +307,7 @@ ${this.assessorGuide}
           evidenceReference: []
         });
       } else if (moduleName === 'ELIGIBILITY') {
-        assessment.pathway = result.notes.includes('Exceptional Talent') ? 'Exceptional Talent' : 'Exceptional Promise';
+        // No longer auto-detecting here to avoid brittle overwrites
       }
     };
 

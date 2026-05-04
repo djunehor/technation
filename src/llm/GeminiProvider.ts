@@ -38,15 +38,15 @@ export class GeminiProvider implements LLMProvider {
     const vertexProject = process.env['VERTEX_PROJECT_ID'];
     const vertexLocation = process.env['VERTEX_LOCATION'] ?? 'global';
 
-    if (vertexProject) {
+    if (apiKey) {
+      this.client = new GoogleGenAI({ apiKey });
+    } else if (vertexProject) {
       this.client = new GoogleGenAI({
         project: vertexProject,
         location: vertexLocation,
         vertexai: true,
         httpOptions: vertexLocation === 'global' ? { baseUrl: 'https://aiplatform.googleapis.com/' } : undefined
       });
-    } else if (apiKey) {
-      this.client = new GoogleGenAI({ apiKey });
     } else {
       throw new Error('Either GEMINI_API_KEY or VERTEX_PROJECT_ID is required to initialize GeminiProvider.');
     }

@@ -9,7 +9,7 @@ import { TechnationAgent } from '../technation/TechnationAgent.js';
 import { assessmentStore } from './assessmentStore.js';
 import { convertPdfToText } from '../converters/PdfConverter.js';
 import { convertDocxToText } from '../converters/DocxConverter.js';
-import { splitPdf, PageMapping } from '../converters/PdfSplitter.js';
+import { splitPdf } from '../converters/PdfSplitter.js';
 import { getLLMProvider } from '../llm/ProviderFactory.js';
 import { Logger } from '../utils/logger.js';
 
@@ -39,7 +39,7 @@ app.use(express.static('public'));
 app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> => {
   const files = req.files as Express.Multer.File[];
   const candidateName = req.body.candidateName || 'Unknown Candidate';
-  const pathway = req.body.pathway as 'Exceptional Talent' | 'Exceptional Promise' | undefined;
+  let pathway = req.body.pathway as 'Exceptional Talent' | 'Exceptional Promise' | undefined;
   const assessmentId = uuidv4();
   const sessionDir = path.join(UPLOAD_ROOT, assessmentId);
 
@@ -103,26 +103,33 @@ Identify the start and end page numbers for the following sections:
 - MANDATORY (Evidence for Mandatory Criterion)
 - OC1, OC2, OC3, OC4 (Evidence for Optional Criteria)
 
-Output ONLY a JSON object mapping the section names to an array of [startPage, endPage].
-If a section is missing, do not include it. Example:
+Also, categorize the applicant as "Exceptional Talent" (more than 5 years experience) or "Exceptional Promise" (less than 5 years experience) based on the experience indicated in the CV.
+
+Output ONLY a JSON object mapping the section names to an array of [startPage, endPage], plus a "pathway" field. Example:
 {
   "ELIGIBILITY": [1, 5],
   "LETTERS": [6, 9],
   "MANDATORY": [10, 15],
-  "OC2": [16, 20]
+  "OC2": [16, 20],
+  "pathway": "Exceptional Talent"
 }
 
 Document Text:
 ${result.text}
 `;
             try {
-              const llmRes = await provider.chat([{ role: 'user', content: mappingPrompt }], []);
+              const llmRes = await (provider as any).chat([{ role: 'user', content: mappingPrompt }], []);
               
               const jsonStart = llmRes.content?.indexOf('{') ?? -1;
               const jsonEnd = llmRes.content?.lastIndexOf('}') ?? -1;
               const mappingJson = jsonStart !== -1 ? llmRes.content?.substring(jsonStart, jsonEnd + 1) : '{}';
-              const mapping: PageMapping = JSON.parse(mappingJson || '{}');
+              const mapping: any = JSON.parse(mappingJson || '{}');
               
+              if (mapping.pathway && !pathway) {
+                pathway = mapping.pathway;
+                assessmentStore.addLog(assessmentId, `[PATHWAY DETECTED] LLM detected pathway: ${pathway}`);
+              }
+
               assessmentStore.addLog(assessmentId, `Obtained page mapping: ${JSON.stringify(mapping)}`);
               
               const splitDir = path.join(sessionDir, `split_${Date.now()}`);
