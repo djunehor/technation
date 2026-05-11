@@ -83,13 +83,17 @@ export class TechnationAgent {
     return content;
   }
   private async sortEvidence(applicationText: string, log: (msg: string) => void, attachments?: LLMAttachment[]): Promise<Record<string, { text: string, attachments: LLMAttachment[] }>> {
+    const clean = (s: string) => s.replace(/[^a-z0-9.]/gi, '_').replace(/\s+/g, ' ').trim();
+
     // Extract all document names first
     const docNames: string[] = [];
     const chunks = applicationText.split('\n--- DOCUMENT: ');
     for (const chunk of chunks) {
       if (!chunk.trim()) continue;
-      const name = chunk.substring(0, chunk.indexOf(' ---')).trim();
-      if (name) docNames.push(name);
+      const firstMarker = chunk.indexOf(' ---');
+      if (firstMarker === -1) continue;
+      const name = chunk.substring(0, firstMarker).trim();
+      if (name) docNames.push(clean(name));
     }
 
     const sortingPrompt = `
@@ -100,6 +104,8 @@ Analyze the following document names and group them into these categories for UK
 4. OC1, OC2, OC3, OC4: Evidence for the Optional Criteria.
 
 Also, determine if the applicant is applying for "Exceptional Talent" or "Exceptional Promise" based on the document names.
+
+!!IMPORTANT!!!: All files must be mapped to one of the categories. If a file is not mapped to any category, it will be lost.
 
 DOCUMENT LIST:
 ${docNames.join('\n')}
@@ -145,14 +151,16 @@ Output JSON only:
       for (const docChunk of documents) {
         if (!docChunk.trim()) continue;
         const firstNewline = docChunk.indexOf(' ---');
+        if (firstNewline === -1) continue;
         const docName = docChunk.substring(0, firstNewline).trim();
+        const cleanDocName = clean(docName);
         const docContent = docChunk.substring(docChunk.indexOf('\n') + 1);
 
         for (const [category, names] of Object.entries(mapping)) {
           const upperCategory = category.toUpperCase();
           if (result[upperCategory] && Array.isArray(names)) {
-            if (names.some((n: any) => n && (n.includes(docName) || docName.includes(n)))) {
-              const att = attachments?.find(a => a.name?.includes(docName) || docName.includes(a.name || ''));
+            if (names.some((n: any) => n && (clean(String(n)) === cleanDocName))) {
+              const att = attachments?.find(a => a.name && clean(a.name) === cleanDocName);
               
               if (att) {
                 result[upperCategory].attachments.push(att);

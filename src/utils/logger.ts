@@ -22,7 +22,7 @@ import { EventEmitter } from 'events';
 const emitter = new EventEmitter();
 
 export class Logger {
-    private static logFilePath: string | null = null;
+    private static logFilePaths: Set<string> = new Set();
 
     static on(event: string, listener: (...args: any[]) => void) {
         emitter.on(event, listener);
@@ -33,9 +33,13 @@ export class Logger {
     }
 
     static setLogFile(path: string) {
-        this.logFilePath = path;
+        this.logFilePaths.add(path);
         // Clear file if it exists
         fs.writeFileSync(path, '');
+    }
+
+    static removeLogFile(path: string) {
+        this.logFilePaths.delete(path);
     }
 
     private static formatTimestamp(includeColors = true): string {
@@ -63,13 +67,20 @@ export class Logger {
         ).join(' ');
         this.emit('log', level, this.stripColors(content));
 
-        if (this.logFilePath) {
+        if (this.logFilePaths.size > 0) {
             const fileTimestamp = this.formatTimestamp(false);
             const content = args.map(arg => 
                 typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
             ).join(' ');
             const logLine = `${fileTimestamp} ${level.padEnd(8)} ${this.stripColors(content)}\n`;
-            fs.appendFileSync(this.logFilePath, logLine);
+            
+            for (const path of this.logFilePaths) {
+                try {
+                    fs.appendFileSync(path, logLine);
+                } catch (e) {
+                    console.error(`Failed to write to log file ${path}:`, e);
+                }
+            }
         }
     }
 
@@ -90,13 +101,17 @@ export class Logger {
         const prefix = `${COLORS.red}${'ERROR/FATAL'.padEnd(8)}${COLORS.reset}`;
         console.error(`${timestamp} ${prefix}`, ...args);
 
-        if (this.logFilePath) {
+        if (this.logFilePaths.size > 0) {
             const fileTimestamp = this.formatTimestamp(false);
             const content = args.map(arg => 
                 typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
             ).join(' ');
             const logLine = `${fileTimestamp} ERROR    ${this.stripColors(content)}\n`;
-            fs.appendFileSync(this.logFilePath, logLine);
+            for (const path of this.logFilePaths) {
+                try {
+                    fs.appendFileSync(path, logLine);
+                } catch (e) {}
+            }
         }
     }
 
@@ -121,8 +136,10 @@ export class Logger {
     /** Write raw text to both console and log file without newlines/prefixes (for streaming) */
     static stream(text: string) {
         process.stdout.write(text);
-        if (this.logFilePath) {
-            fs.appendFileSync(this.logFilePath, text);
+        for (const path of this.logFilePaths) {
+            try {
+                fs.appendFileSync(path, text);
+            } catch (e) {}
         }
     }
 
@@ -131,8 +148,10 @@ export class Logger {
         const line = char.repeat(length);
         console.log(`${COLORS.gray}${line}${COLORS.reset}`);
         
-        if (this.logFilePath) {
-            fs.appendFileSync(this.logFilePath, `${line}\n`);
+        for (const path of this.logFilePaths) {
+            try {
+                fs.appendFileSync(path, `${line}\n`);
+            } catch (e) {}
         }
     }
 }

@@ -20,7 +20,7 @@ Your role is to strictly evaluate Global Talent Visa applications by following t
 `;
 
 export const ADVERSARY_SYSTEM_PROMPT = `
-You are a Tech Nation Reviewer.
+You are a Tech Nation Reviewer. The current date is ${new Date().toDateString()}.
 Your role is to audit the initial assessment to ensure it follows the **Internal Assessor Guide** to the letter.
 
 **AUDIT FOCUS:**
@@ -36,7 +36,7 @@ Your role is to audit the initial assessment to ensure it follows the **Internal
 `;
 
 export const JUDGE_SYSTEM_PROMPT = `
-You are the Tech Nation Endorser.
+You are the Tech Nation Endorser. The current date is ${new Date().toDateString()}.
 Your role is to make the final decision by resolving the debate between the Assessor and the Reviewer, using the **Internal Assessor Guide** as the ultimate authority.
 
 **DECISION RULES:**

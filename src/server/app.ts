@@ -69,9 +69,12 @@ app.post('/api/assess', upload.array('files'), async (req, res): Promise<any> =>
 
   // Process in background
   (async () => {
+    const logPath = path.join('/tmp', `technation_${assessmentId}.log`);
     try {
+      Logger.setLogFile(logPath);
       assessmentStore.updateStatus(assessmentId, 'processing');
       assessmentStore.addLog(assessmentId, `Received ${files.length} files. Starting extraction...`);
+      assessmentStore.addLog(assessmentId, `System debug log: ${logPath}`);
 
       let fullText = '';
       const attachments: any[] = [];
@@ -206,6 +209,7 @@ ${result.text}
       assessmentStore.addLog(assessmentId, `ERROR: ${error.message}`);
     } finally {
       cleanup();
+      Logger.removeLogFile(logPath);
     }
   })();
 });
