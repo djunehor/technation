@@ -4,8 +4,12 @@
   "description": "Autonomous Tech Nation Visa Assessment Agent",
   "type": "module",
   "main": "dist/index.js",
+  "author": "djunehor <adeademi2@gmail.com>",
+  "license": "MIT",
   "scripts": {
     "build": "tsc",
+    "test": "npx tsx --test tests/retry.test.ts",
+    "lint": "tsc --noEmit",
     "start": "node dist/server/app.js",
     "dev": "npx tsx src/server/app.ts",
     "assess": "npx tsx scripts/run_technation_assessment.ts"
